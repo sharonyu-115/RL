@@ -33,6 +33,40 @@ docker buildx build --build-context nemo-rl=. -f docker/Dockerfile \
 > [!NOTE]
 > The `--tag <registry>/nemo-rl:latest --push` flags are not necessary if you just want to build locally.
 
+## Backend dependency versions
+
+The universal lockfile selects different CUDA 13.0 Torch builds for separate
+worker environments:
+
+| Environment | Torch | torchvision | TileLang |
+| --- | --- | --- | --- |
+| Default environment (no backend extra) | 2.13.0 | 0.28.0 | 0.1.12 |
+| `vllm` | 2.13.0 | 0.28.0 | 0.1.12 |
+| `mcore` | 2.11.0 | 0.26.0 | 0.1.12 |
+| `automodel`, `sglang` | 2.11.0 | 0.26.0 | 0.1.11 |
+| `fsdp`, `trtllm` | 2.11.0 | 0.26.0 | 0.1.9 on x86_64; 0.1.11 on aarch64 |
+
+The vLLM 0.29.0 wheel requires Torch 2.13.0, FlashInfer 0.6.18, TileLang 0.1.12,
+CUTLASS DSL 4.6.2, and Quack 0.6.4. FlashInfer includes the
+[small-batch BF16 MoE intermediate-allocation fix](https://github.com/flashinfer-ai/flashinfer/pull/4319).
+Megatron independently needs TileLang 0.1.12 for Qwen3.5 Gated DeltaNet backward:
+0.1.9 produced a misaligned-address failure, and 0.1.11 produced incorrect
+gradients in the recorded GB200 reproducer. See the related
+[Blackwell TMA swizzle-alignment issue](https://github.com/tile-ai/tilelang/issues/2379).
+
+Select one backend per environment. In particular, `fsdp` cannot be combined
+with `mcore` or `vllm`. The Docker build and Ray actor registry select backend
+extras separately. A plain `uv sync` selects the default environment; always
+include the backend extra when syncing a worker environment. The default
+environment now uses Torch 2.13; training workers explicitly retain Torch 2.11.
+
+Rebuild compiled CUDA dependencies and worker environments when changing this
+stack; copying Torch into an existing worker environment can leave extensions
+linked against the previous version. Lockfile resolution does not validate CUDA
+imports, optional expert-parallel backends, or end-to-end training. The Qwen3.5
+campaign used a separately prepared image; a fresh image built from these pins
+still needs runtime validation.
+
 ## Skipping vLLM or SGLang Dependencies
 
 If you don't need vLLM, SGLang, or TRT-LLM support, you can skip building those dependencies to reduce build time and image size. Use the `SKIP_VLLM_BUILD`, `SKIP_SGLANG_BUILD`, and/or `SKIP_TRTLLM_BUILD` build arguments:

@@ -21,11 +21,13 @@ Megatron-Bridge submodule moves the Megatron-LM pointer underneath us, so these 
 fail the moment upstream's own pin changes and the floor needs a second look.
 """
 
+import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
+from packaging.markers import default_environment
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import Version
@@ -101,3 +103,90 @@ def test_mcore_energon_floor_is_within_megatron_lm_range(
         f"the floor; widening it past upstream either makes `uv lock` unsatisfiable or "
         f"silently has no effect."
     )
+
+
+@pytest.fixture(
+    scope="module",
+    params=[
+        ("vllm",),
+        ("vllm", "nemo_gym"),
+        ("vllm", "modelopt"),
+        ("mcore",),
+        ("mcore", "modelopt"),
+        ("fsdp",),
+        ("automodel",),
+        ("sglang",),
+        ("trtllm",),
+    ],
+)
+def backend_lock_requirements(
+    request: pytest.FixtureRequest,
+) -> tuple[str, list[Requirement]]:
+    """Export the actual selected lock graph without resolving or installing it."""
+    extras = request.param
+    result = subprocess.run(
+        [
+            "uv",
+            "export",
+            "--frozen",
+            "--offline",
+            "--no-hashes",
+            "--no-header",
+            "--no-annotate",
+            "--no-emit-local",
+            *(flag for extra in extras for flag in ("--extra", extra)),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return extras[0], [
+        Requirement(line) for line in result.stdout.splitlines() if line.strip()
+    ]
+
+
+@pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
+def test_backend_lock_preserves_torch_and_compiler_versions(
+    backend_lock_requirements: tuple[str, list[Requirement]], architecture: str
+) -> None:
+    """Catch a global override or lock fork silently downgrading a worker stack."""
+    backend, requirements = backend_lock_requirements
+    environment = default_environment() | {
+        "platform_machine": architecture,
+        "sys_platform": "linux",
+        "platform_system": "Linux",
+        "python_version": "3.13",
+        "python_full_version": "3.13.14",
+    }
+    selected = {
+        canonicalize_name(req.name): req
+        for req in requirements
+        if req.marker is None or req.marker.evaluate(environment)
+    }
+    expected = {
+        "torch": "2.13.0+cu130" if backend == "vllm" else "2.11.0+cu130",
+        "torchvision": "0.28.0+cu130" if backend == "vllm" else "0.26.0+cu130",
+        "triton": "3.7.1" if backend == "vllm" else "3.6.0",
+    }
+    if backend in ("vllm", "mcore"):
+        expected["tilelang"] = "0.1.12"
+    if backend == "vllm":
+        expected.update(
+            {
+                "flashinfer-python": "0.6.18",
+                "flashinfer-cubin": "0.6.18",
+                "flashinfer-jit-cache": "0.6.18+cu130",
+                "nvidia-cutlass-dsl": "4.6.2",
+                "quack-kernels": "0.6.4",
+            }
+        )
+        assert selected["vllm"].url == (
+            "https://github.com/vllm-project/vllm/releases/download/v0.29.0/"
+            f"vllm-0.29.0-cp38-abi3-manylinux_2_28_{architecture}.whl"
+        )
+    for package, version in expected.items():
+        assert str(selected[package].specifier) == f"=={version}", (
+            f"{backend} on {architecture}: unexpected {selected[package]}"
+        )

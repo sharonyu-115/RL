@@ -51,8 +51,30 @@ The seven source/test files are committed, unchanged from the verified handoff:
 
 The four campaign recipes/scripts remain untracked. They contain personal
 defaults and depend on an untracked operational launcher; replace those in this
-worktree before committing. Dependency pins and nightly lists have not yet been
-updated. Submodules have not been initialized in this worktree.
+worktree before committing. Nightly lists have not yet been updated.
+
+The dependency update includes `pyproject.toml`, `uv.lock`, `docs/docker.md`,
+and `tests/unit/test_dependency_pins.py` in one signed-off commit.
+The lock was generated with Docker's uv 0.11.28.
+Independent local clones of the four recorded dependency checkouts below were
+initialized without changing their revisions or the source worktrees.
+
+The prepared lock selects vLLM 0.29 / Torch 2.13 / FlashInfer 0.6.18 /
+TileLang 0.1.12 / CUTLASS DSL 4.6.2 / Quack 0.6.4. Megatron's exported graph
+changes only TileLang 0.1.9 -> 0.1.12, retaining Torch 2.11. Export comparisons
+preserve the FSDP, Automodel, SGLang and TRT-LLM package selections on both Linux
+architectures. The default driver environment now selects Torch 2.13,
+torchvision 0.28, Triton 3.7.1 and TileLang 0.1.12; that is an additional change
+from the historical campaign's base environment. FSDP is declared incompatible
+with vLLM and Megatron extras, matching their differing runtime/compiler pins.
+
+Fresh dependency checks: 20 tests passed using `--noconftest` (these tests only
+inspect package metadata and export the lock, so they do not need Ray). Coverage
+includes both Linux architectures and vLLM/Gym and ModelOpt worker combinations.
+`uv lock --check`, locked dry-run syncs for vLLM/Gym and Megatron, Ruff and Taplo
+checks passed. No packages were installed into worker environments; no image
+was rebuilt or GPU validation launched. Fresh-container CUDA validation remains
+outstanding. Local evidence is in `session/20260913_194317/dependency-*`.
 
 Before these commits, all seven files passed Ruff lint, Ruff format checks,
 Python syntax parsing, and handoff SHA256 verification. The local generation
