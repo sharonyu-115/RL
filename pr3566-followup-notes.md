@@ -44,13 +44,24 @@ Keep follow-up changes in reviewable, signed-off commits:
 4. Portable Qwen3.5 NVFP4 replay OFF/ON recipes and drivers, appropriate nightly
    registration, and supporting documentation.
 
-At branch setup, only this note is committed. The seven source/test changes and
-four experimental recipes/scripts are reconstructed working-tree changes, not
-reviewed implementation commits. Do not stage them wholesale. The four campaign
-files still contain personal defaults and depend on an untracked operational
-launcher; replace those in this worktree before committing. Dependency pins and
-nightly lists have not yet been updated. Unit tests have not been rerun here.
-Submodules have not been initialized in this worktree.
+The seven source/test files are committed, unchanged from the verified handoff:
+
+- `a6ba9ed80`: grouped MoE checkpoint refits and generation tests (five files).
+- `5c374a318`: self-packing router replay alignment and tests (two files).
+
+The four campaign recipes/scripts remain untracked. They contain personal
+defaults and depend on an untracked operational launcher; replace those in this
+worktree before committing. Dependency pins and nightly lists have not yet been
+updated. Submodules have not been initialized in this worktree.
+
+Before these commits, all seven files passed Ruff lint, Ruff format checks,
+Python syntax parsing, and handoff SHA256 verification. The local generation
+pytest attempt failed during Ray setup before running a test (report under
+`session/20260913_194317/source-generation-local.xml`). The host also lacks
+the vLLM and Megatron worker environments; no fresh worker-suite pass is claimed.
+Historical `packing-unit-2808430.log` records 103 Megatron tests passed with
+three distributed cases deselected, and 74 generation tests passed. That is
+historical evidence, not a substitute for a fresh run in the worker environments.
 
 The recorded dependency checkouts are:
 
