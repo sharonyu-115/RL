@@ -449,16 +449,6 @@ def process_microbatch(
                 # or the double-processing produces shape mismatches downstream
                 # (GDN/RoPE/MoE). We only pad each sequence individually and
                 # hand the model [B, max_seq] + bool attention_mask + cu_seqlens.
-                if routed_experts is not None:
-                    # Router replay needs routed_experts CP-sharded into the
-                    # model's local token order, but a self-packing model packs
-                    # and CP-shards internally, so NeMo-RL cannot build a matching
-                    # layout here. Fail loudly rather than feed misaligned routes.
-                    raise NotImplementedError(
-                        "Router replay (routed_experts) is not supported with "
-                        "models that pack and context-parallel shard internally "
-                        "(delegate_pack_to_model=True)."
-                    )
                 (
                     input_ids,
                     input_ids_cp_sharded,
@@ -472,6 +462,31 @@ def process_microbatch(
                     pad_individual_seqs_to_multiple_of,
                     pad_full_seq_to=pad_full_seq_to,
                 )
+                if routed_experts is not None:
+                    if routed_experts.shape[:2] != data_dict["input_ids"].shape:
+                        raise ValueError(
+                            "Self-packing router replay requires routed_experts "
+                            "to match the original [batch, seq] input_ids layout."
+                        )
+                    # The bool mask handed to Bridge includes the padded tails,
+                    # so preprocess_packed_seqs uses these exact boundaries and
+                    # the same per-sequence zigzag CP selection. Keep model IDs
+                    # rectangular; only replay is packed ahead of model forward.
+                    # Sequence-parallel selection is applied later by replay.
+                    (
+                        routed_experts,
+                        routed_experts_cp_sharded,
+                        _,
+                        _,
+                    ) = _shard_routed_experts_for_cp(
+                        routed_experts,
+                        None,
+                        seq_lengths,
+                        cu_seqlens_padded,
+                        cu_seqlens_padded,
+                        get_context_parallel_rank(),
+                        get_context_parallel_world_size(),
+                    )
                 if has_mtp_loss_mask:
                     source_mtp_loss_mask = data_dict["mtp_loss_mask"]
                     assert source_mtp_loss_mask.ndim == 2

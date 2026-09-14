@@ -23,6 +23,8 @@ focusing on:
 - Sequence dimension validation
 """
 
+from math import lcm
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -980,6 +982,96 @@ class TestProcessMicrobatch:
             result.mtp_loss_mask,
             torch.tensor([[0, 0, 1, 0], [0, 1, 0, 0]]),
         )
+
+
+@pytest.mark.mcore
+@pytest.mark.parametrize("cp_size", [1, 2, 4])
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("fp4_alignment", [1, 128])
+@pytest.mark.parametrize("fixed_total", [False, True])
+def test_self_packing_router_replay_matches_bridge(
+    cp_size: int, tp_size: int, fp4_alignment: int, fixed_total: bool
+) -> None:
+    """Replay follows the actual Bridge packer on every CP and SP rank.
+
+    Exercise multiple unequal rows, per-sequence padding, fixed-length trailing
+    padding, and missing-route sentinels. Model inputs remain unpacked; only the
+    replay payload is preselected into the language-model token order.
+    """
+    from megatron.bridge.models.qwen_vl.modelling_qwen3_vl.utils import (
+        preprocess_packed_seqs,
+    )
+
+    from nemo_rl.models.megatron.data import process_microbatch
+    from nemo_rl.models.megatron.router_replay import _split_for_sequence_parallel
+
+    lengths = torch.tensor([3, 11, 5], dtype=torch.int32)
+    ids = torch.arange(1, 34).reshape(3, 11)
+    routes = torch.stack((ids, ids + 1000), dim=-1).unsqueeze(2).repeat(1, 1, 3, 1)
+    routes[1, 4] = -1  # Missing capture must remain a fallback, not become padding.
+    original_routes = routes.clone()
+    align = lcm(fp4_alignment, tp_size * (2 * cp_size if cp_size > 1 else 1))
+    natural_total = sum(
+        ((int(length) + align - 1) // align) * align for length in lengths
+    )
+    fixed_length = natural_total + 2 * align if fixed_total else None
+
+    for cp_rank in range(cp_size):
+        groups = SimpleNamespace(
+            cp=SimpleNamespace(size=lambda: cp_size, rank=lambda: cp_rank),
+            tp=SimpleNamespace(size=lambda: tp_size),
+        )
+        with (
+            patch(
+                "nemo_rl.models.megatron.data.get_context_parallel_rank",
+                return_value=cp_rank,
+            ),
+            patch(
+                "nemo_rl.models.megatron.data.get_context_parallel_world_size",
+                return_value=cp_size,
+            ),
+        ):
+            result = process_microbatch(
+                {"input_ids": ids, "input_lengths": lengths, "routed_experts": routes},
+                seq_length_key="input_lengths",
+                pad_individual_seqs_to_multiple_of=align,
+                pad_full_seq_to=fixed_length,
+                pack_sequences=True,
+                delegate_pack_to_model=True,
+            )
+        # Construct the rectangular payload independently; let the actual model
+        # utility select its positions. Do not use the NRL sharding helper as oracle.
+        rectangle = (
+            torch.arange(2).expand(*result.input_ids_cp_sharded.shape, 3, 2).clone()
+        )
+        for index, length in enumerate(lengths.tolist()):
+            rectangle[index, :length] = routes[index, :length]
+        expected, params = preprocess_packed_seqs(
+            rectangle, result.attention_mask, pg_collection=groups
+        )
+        assert torch.equal(result.routed_experts_cp_sharded, expected)
+        assert torch.equal(result.cu_seqlens_padded, params.cu_seqlens_q_padded)
+        assert result.input_ids_cp_sharded.shape[0] == 3
+        assert result.routed_experts.shape[1] == int(params.cu_seqlens_q_padded[-1])
+        assert torch.equal(routes, original_routes)
+        for tp_rank in range(tp_size):
+            with (
+                patch(
+                    "megatron.core.parallel_state.get_tensor_model_parallel_world_size",
+                    return_value=tp_size,
+                ),
+                patch(
+                    "megatron.core.parallel_state.get_tensor_model_parallel_rank",
+                    return_value=tp_rank,
+                ),
+            ):
+                local = _split_for_sequence_parallel(
+                    SimpleNamespace(sequence_parallel=True),
+                    result.routed_experts_cp_sharded.squeeze(0),
+                )
+            assert torch.equal(
+                local, expected.squeeze(0).chunk(tp_size, dim=0)[tp_rank]
+            )
 
 
 @pytest.mark.mcore
