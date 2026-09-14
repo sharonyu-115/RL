@@ -111,6 +111,27 @@ def _refresh_hpc_modules_after_layerwise_reload(model: torch.nn.Module) -> None:
             module.process_weights_after_loading(model)
 
 
+def _refresh_routed_experts_capture_after_reload(model_runner: Any) -> None:
+    """Rebind callbacks when native refit replaces monolithic MoE kernels."""
+    # V2 uses capturer presence instead of V1's initialization flag. V1 may
+    # already have a capturer while initialization is still in progress.
+    capturer = getattr(model_runner, "routed_experts_capturer", None)
+    if (
+        capturer is None
+        or getattr(model_runner, "routed_experts_initialized", None) is False
+    ):
+        return
+
+    # vLLM 0.29 binds capture to kernel instances; 0.26 binds persistent
+    # router objects and has no rebinding API.
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+
+    bind = getattr(routed_experts_capturer, "bind_routed_experts_capturer", None)
+    if bind is not None:
+        bind(model_runner.model, capturer)
+        logger.info("Rebound routed-experts capture after native weight reload")
+
+
 def _unquantized_flashinfer_trtllm_modules(
     model: torch.nn.Module,
 ) -> list[torch.nn.Module]:
@@ -1263,6 +1284,7 @@ class VllmInternalWorkerExtension:
                     weights_iterator=prepared_iterator,
                     is_checkpoint_format=True,
                 )
+                _refresh_routed_experts_capture_after_reload(self.model_runner)
 
                 if not complete_received:
                     raise RuntimeError(
@@ -1522,7 +1544,7 @@ class VllmInternalWorkerExtension:
         applier = self._get_sparse_delta_applier()
         return applier.update_weights_from_decoded_sparse_payload(*payloads)
 
-    def synchronize_device(self) -> None:
+    def synchronize_sparse_refit(self) -> None:
         self._get_sparse_delta_applier().synchronize_device()
 
     def finish_sparse_delta_refit(self) -> dict[str, Any]:

@@ -96,6 +96,15 @@ class ExpertWeightSpec:
     checkpoint_suffix: str
     logical_key: str
     role: ProjectionRole
+    expert_id: int
+
+
+@dataclass(frozen=True)
+class GroupedExpertWeightSpec:
+    """One grouped checkpoint tensor advertised by a vLLM fused mapping."""
+
+    checkpoint_suffix: str
+    role_by_chunk: tuple[tuple[int, ProjectionRole], ...]
 
 
 @dataclass(frozen=True)
@@ -106,6 +115,9 @@ class RoutedExpertTarget:
     module_name: str
     specs: tuple[ExpertWeightSpec, ...]
     specs_by_suffix: Mapping[str, ExpertWeightSpec]
+    specs_by_expert_role: Mapping[tuple[int, ProjectionRole], ExpertWeightSpec]
+    grouped_specs_by_suffix: Mapping[str, GroupedExpertWeightSpec]
+    expert_ids: tuple[int, ...]
     expected_roles: frozenset[tuple[str, ProjectionRole]]
 
 
@@ -117,7 +129,8 @@ def _build_expert_target(module_name: str, module: RoutedExperts) -> RoutedExper
         "w3": module.ckpt_up_proj_name,
     }
     specs_by_suffix: dict[str, ExpertWeightSpec] = {}
-    for _param_name, weight_name, _expert_id, shard_id in module.get_expert_mapping():
+    expert_mapping = tuple(module.get_expert_mapping())
+    for _param_name, weight_name, expert_id, shard_id in expert_mapping:
         if shard_id not in projection_names:
             raise RuntimeError(
                 f"[nvfp4_pertoken] {module_name} returned unsupported expert "
@@ -141,6 +154,7 @@ def _build_expert_target(module_name: str, module: RoutedExperts) -> RoutedExper
             checkpoint_suffix=checkpoint_suffix,
             logical_key=logical_key,
             role=role,
+            expert_id=int(expert_id),
         )
         previous = specs_by_suffix.setdefault(checkpoint_suffix, spec)
         if previous != spec:
@@ -163,6 +177,65 @@ def _build_expert_target(module_name: str, module: RoutedExperts) -> RoutedExper
             f"missing roles {incomplete or 'all W1/W2/W3 entries'}."
         )
 
+    specs_by_expert_role: dict[tuple[int, ProjectionRole], ExpertWeightSpec] = {}
+    for spec in specs_by_suffix.values():
+        key = (spec.expert_id, spec.role)
+        previous = specs_by_expert_role.setdefault(key, spec)
+        if previous != spec:
+            raise RuntimeError(
+                f"[nvfp4_pertoken] ambiguous vLLM expert mapping for "
+                f"{module_name}: expert {spec.expert_id} {spec.role}."
+            )
+    expert_ids = tuple(sorted({spec.expert_id for spec in specs_by_suffix.values()}))
+    if expert_ids != tuple(range(len(expert_ids))) or any(
+        (expert_id, role) not in specs_by_expert_role
+        for expert_id in expert_ids
+        for role in ("w1", "w2", "w3")
+    ):
+        raise RuntimeError(
+            f"[nvfp4_pertoken] {module_name} returned a non-contiguous or "
+            f"incomplete expert-id mapping: {expert_ids}."
+        )
+
+    ordinary_entries = set(expert_mapping)
+    grouped_roles_by_suffix: dict[str, dict[int, ProjectionRole]] = {}
+    for entry in module.get_expert_mapping(include_fused=True):
+        if entry in ordinary_entries:
+            continue
+        param_name, weight_name, chunk_id, shard_id = entry
+        # Whole-layer fused tensors map to a complete weight parameter.
+        # vLLM 0.29 also exposes per-expert fused aliases using the parameter
+        # stem (e.g. w13_); those are not grouped checkpoint tensors.
+        if not param_name.endswith("weight"):
+            continue
+        if shard_id not in projection_names:
+            raise RuntimeError(
+                f"[nvfp4_pertoken] {module_name} returned unsupported grouped "
+                f"expert shard {shard_id!r} for {weight_name!r}."
+            )
+        checkpoint_suffix = weight_name.removesuffix(".")
+        role = cast(ProjectionRole, shard_id)
+        roles = grouped_roles_by_suffix.setdefault(checkpoint_suffix, {})
+        previous = roles.setdefault(int(chunk_id), role)
+        if previous != role:
+            raise RuntimeError(
+                f"[nvfp4_pertoken] ambiguous vLLM grouped expert mapping for "
+                f"{module_name}: {checkpoint_suffix!r} chunk {chunk_id}."
+            )
+
+    grouped_specs_by_suffix: dict[str, GroupedExpertWeightSpec] = {}
+    for checkpoint_suffix, role_by_chunk in grouped_roles_by_suffix.items():
+        if not ((role_by_chunk == {0: "w1", 1: "w3"}) or (role_by_chunk == {0: "w2"})):
+            raise RuntimeError(
+                f"[nvfp4_pertoken] unsupported vLLM grouped expert mapping for "
+                f"{module_name}: {checkpoint_suffix!r} has chunks "
+                f"{sorted(role_by_chunk.items())}."
+            )
+        grouped_specs_by_suffix[checkpoint_suffix] = GroupedExpertWeightSpec(
+            checkpoint_suffix=checkpoint_suffix,
+            role_by_chunk=tuple(sorted(role_by_chunk.items())),
+        )
+
     specs = tuple(
         sorted(
             specs_by_suffix.values(),
@@ -174,6 +247,9 @@ def _build_expert_target(module_name: str, module: RoutedExperts) -> RoutedExper
         module_name=module_name,
         specs=specs,
         specs_by_suffix=MappingProxyType(dict(specs_by_suffix)),
+        specs_by_expert_role=MappingProxyType(dict(specs_by_expert_role)),
+        grouped_specs_by_suffix=MappingProxyType(dict(grouped_specs_by_suffix)),
+        expert_ids=expert_ids,
         expected_roles=frozenset((spec.logical_key, spec.role) for spec in specs),
     )
 
@@ -224,6 +300,7 @@ class NvFp4PerTokenQuantizer:
                     self._all_target_suffixes.update(
                         spec.checkpoint_suffix for spec in target.specs
                     )
+                    self._all_target_suffixes.update(target.grouped_specs_by_suffix)
                     quantized_layers[layer_index] = module_name
                     if boundary_patterns is None:
                         boundary_patterns = list(
@@ -310,6 +387,79 @@ class NvFp4PerTokenQuantizer:
                 return spec
         return None
 
+    @staticmethod
+    def _classify_grouped(
+        target: RoutedExpertTarget, name: str
+    ) -> GroupedExpertWeightSpec | None:
+        """Classify a grouped checkpoint tensor from vLLM's fused mappings."""
+        parts = name.split(".")
+        for index in range(len(parts)):
+            spec = target.grouped_specs_by_suffix.get(".".join(parts[index:]))
+            if spec is not None:
+                return spec
+        return None
+
+    @staticmethod
+    def _expand_grouped_weight(
+        target: RoutedExpertTarget,
+        name: str,
+        tensor: torch.Tensor,
+        spec: GroupedExpertWeightSpec,
+    ) -> list[tuple[str, torch.Tensor]]:
+        """Split one grouped checkpoint tensor into mapped expert projections."""
+        if tensor.ndim != 3:
+            raise RuntimeError(
+                f"[nvfp4_pertoken] grouped expert checkpoint weight {name!r} must "
+                f"be three-dimensional, got shape {tuple(tensor.shape)}."
+            )
+        if tensor.shape[0] != len(target.expert_ids):
+            raise RuntimeError(
+                f"[nvfp4_pertoken] grouped expert checkpoint weight {name!r} has "
+                f"{tensor.shape[0]} experts, expected {len(target.expert_ids)}."
+            )
+
+        hidden_dim = target.module.moe_config.hidden_dim_unpadded
+        projected_tensors: tuple[tuple[ProjectionRole, torch.Tensor], ...]
+        if {role for _, role in spec.role_by_chunk} == {"w1", "w3"}:
+            if tensor.shape[-1] != hidden_dim:
+                tensor = tensor.transpose(-1, -2)
+            if (
+                tensor.shape[-1] != hidden_dim
+                or tensor.shape[1] % len(spec.role_by_chunk) != 0
+            ):
+                raise RuntimeError(
+                    f"[nvfp4_pertoken] grouped gate/up checkpoint weight {name!r} "
+                    f"cannot be split into mapped projections with hidden size "
+                    f"{hidden_dim}; got shape {tuple(tensor.shape)}."
+                )
+            chunks = tensor.chunk(len(spec.role_by_chunk), dim=1)
+            projected_tensors = tuple(
+                (role, chunks[chunk_id]) for chunk_id, role in spec.role_by_chunk
+            )
+        else:
+            if tensor.shape[-2] != hidden_dim:
+                tensor = tensor.transpose(-1, -2)
+            if tensor.shape[-2] != hidden_dim:
+                raise RuntimeError(
+                    f"[nvfp4_pertoken] grouped down checkpoint weight {name!r} "
+                    f"does not have hidden size {hidden_dim}; got shape "
+                    f"{tuple(tensor.shape)}."
+                )
+            projected_tensors = (("w2", tensor),)
+
+        source_prefix = name.removesuffix(spec.checkpoint_suffix)
+        expanded: list[tuple[str, torch.Tensor]] = []
+        for expert_position, expert_id in enumerate(target.expert_ids):
+            for role, role_tensor in projected_tensors:
+                expert_spec = target.specs_by_expert_role[(expert_id, role)]
+                expanded.append(
+                    (
+                        f"{source_prefix}{expert_spec.checkpoint_suffix}",
+                        role_tensor[expert_position],
+                    )
+                )
+        return expanded
+
     def process(
         self, weights: list[tuple[str, torch.Tensor]]
     ) -> list[tuple[str, torch.Tensor]]:
@@ -344,6 +494,13 @@ class NvFp4PerTokenQuantizer:
 
             spec = self._classify(target, name)
             if spec is None:
+                grouped_spec = self._classify_grouped(target, name)
+                if grouped_spec is not None:
+                    expanded = self._expand_grouped_weight(
+                        target, name, tensor, grouped_spec
+                    )
+                    out.extend(self.process(expanded))
+                    continue
                 if name.endswith(".weight"):
                     raise RuntimeError(
                         f"[nvfp4_pertoken] target-owned weight {name!r} is not "
@@ -620,7 +777,6 @@ class ModelOptNvFp4PerTokenFusedMoE(ModelOptNvFp4FusedMoE):
             experts_cls=self.experts_cls,
             backend=self.nvfp4_backend,
             routing_tables=layer._expert_routing_tables(),
-            layer=layer,
             per_token_activation=True,
         )
         self.moe_kernel.fused_experts.process_weights_after_loading(layer)

@@ -37,17 +37,176 @@ def nvfp4_module():
     yield M
 
 
-def _quantizer_with_layer_quantized(M, quantized: bool, expected_roles=None):
+def test_worker_extension_has_no_upstream_attribute_collisions(
+    nvfp4_module: types.ModuleType,
+) -> None:
+    # vLLM is optional outside the generation-worker test environment.
+    from vllm.v1.worker.gpu_worker import Worker
+
+    conflicts = {
+        name
+        for name in dir(nvfp4_module.NvFp4PerTokenWorkerExtension)
+        if not name.startswith("__") and hasattr(Worker, name)
+    }
+    assert not conflicts, conflicts
+
+
+def test_grouped_mapping_with_real_vllm_mapping(
+    nvfp4_module: types.ModuleType,
+) -> None:
+    M = nvfp4_module
+
+    class ExpertMapping:
+        ckpt_gate_proj_name = "gate_proj"
+        ckpt_down_proj_name = "down_proj"
+        ckpt_up_proj_name = "up_proj"
+
+        def get_expert_mapping(
+            self, include_fused: bool = False
+        ) -> list[tuple[str, str, int, str]]:
+            return M.RoutedExperts.build_expert_params_mapping(
+                "gate_proj",
+                "down_proj",
+                "up_proj",
+                num_experts=2,
+                routed_experts_prefix="",
+                include_fused=include_fused,
+            )
+
+    target = M._build_expert_target("model.layers.0.mlp.experts", ExpertMapping())
+    assert len(target.specs) == 6
+    assert {
+        name: spec.role_by_chunk
+        for name, spec in target.grouped_specs_by_suffix.items()
+    } == {
+        "experts.gate_up_proj": ((0, "w1"), (1, "w3")),
+        "experts.down_proj": ((0, "w2"),),
+    }
+
+
+@pytest.mark.parametrize("runner_version", ["v1", "v2"])
+def test_refit_refreshes_routed_experts_capture(
+    nvfp4_module: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_version: str,
+) -> None:
+    # These optional vLLM imports run only inside the generation test fixture.
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+    from nemo_rl.models.generation.vllm import vllm_backend
+
+    calls = []
+    monkeypatch.setattr(
+        routed_experts_capturer,
+        "bind_routed_experts_capturer",
+        lambda model, capturer: calls.append((model, capturer)),
+        raising=False,
+    )
+    model, capturer = object(), object()
+    runner = types.SimpleNamespace(
+        model=model,
+        routed_experts_capturer=capturer,
+    )
+    if runner_version == "v1":
+        runner.routed_experts_initialized = True
+    vllm_backend._refresh_routed_experts_capture_after_reload(runner)
+    assert calls == [(model, capturer)]
+    # Repeated refits must bind the current model, not reuse stale callbacks.
+    new_model = object()
+    runner.model = new_model
+    vllm_backend._refresh_routed_experts_capture_after_reload(runner)
+    assert calls == [(model, capturer), (new_model, capturer)]
+
+
+@pytest.mark.parametrize(
+    "state", ["missing", "v2-disabled", "v1-disabled", "v1-initializing"]
+)
+def test_refit_capture_refresh_skips_uninitialized_runner(
+    nvfp4_module: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    # vLLM is optional outside the generation-worker test environment.
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+    from nemo_rl.models.generation.vllm import vllm_backend
+
+    def unexpected_bind(*args: object) -> None:
+        pytest.fail("Capture must not be rebound before initialization")
+
+    monkeypatch.setattr(
+        routed_experts_capturer,
+        "bind_routed_experts_capturer",
+        unexpected_bind,
+        raising=False,
+    )
+    runner = types.SimpleNamespace()
+    if state != "missing":
+        runner.routed_experts_capturer = None
+    if state.startswith("v1"):
+        runner.routed_experts_initialized = False
+    if state == "v1-initializing":
+        runner.routed_experts_capturer = object()
+    vllm_backend._refresh_routed_experts_capture_after_reload(runner)
+
+
+def test_refit_capture_refresh_propagates_binding_failure(
+    nvfp4_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # vLLM is optional outside the generation-worker test environment.
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+    from nemo_rl.models.generation.vllm import vllm_backend
+
+    def failed_bind(*args: object) -> None:
+        raise RuntimeError("capture binding failed")
+
+    monkeypatch.setattr(
+        routed_experts_capturer,
+        "bind_routed_experts_capturer",
+        failed_bind,
+        raising=False,
+    )
+    runner = types.SimpleNamespace(model=object(), routed_experts_capturer=object())
+    with pytest.raises(RuntimeError, match="capture binding failed"):
+        vllm_backend._refresh_routed_experts_capture_after_reload(runner)
+
+
+def test_refit_capture_refresh_supports_legacy_vllm(
+    nvfp4_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # vLLM 0.26 uses persistent router callbacks without a rebinding API.
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+    from nemo_rl.models.generation.vllm import vllm_backend
+
+    monkeypatch.delattr(
+        routed_experts_capturer, "bind_routed_experts_capturer", raising=False
+    )
+    vllm_backend._refresh_routed_experts_capture_after_reload(
+        types.SimpleNamespace(
+            routed_experts_initialized=True, routed_experts_capturer=object()
+        )
+    )
+
+
+def _quantizer_with_layer_quantized(
+    M,
+    quantized: bool,
+    expected_roles=None,
+    *,
+    num_experts: int = 1,
+    include_fused: bool = False,
+):
     """Build a quantizer around one synthetic Qwen-style target inventory."""
     quantizer = M.NvFp4PerTokenQuantizer.__new__(M.NvFp4PerTokenQuantizer)
     quantizer._model = None
     owner = torch.nn.Module()
+    owner.moe_config = types.SimpleNamespace(hidden_dim_unpadded=32)
     specs = tuple(
         M.ExpertWeightSpec(
-            checkpoint_suffix=f"experts.0.{projection}.weight",
-            logical_key="experts.0.<projection>",
+            checkpoint_suffix=f"experts.{expert_id}.{projection}.weight",
+            logical_key=f"experts.{expert_id}.<projection>",
             role=role,
+            expert_id=expert_id,
         )
+        for expert_id in range(num_experts)
         for role, projection in (
             ("w1", "gate_proj"),
             ("w2", "down_proj"),
@@ -55,17 +214,39 @@ def _quantizer_with_layer_quantized(M, quantized: bool, expected_roles=None):
         )
     )
     if expected_roles is None:
-        expected_roles = {("experts.0.<projection>", spec.role) for spec in specs}
+        expected_roles = {(spec.logical_key, spec.role) for spec in specs}
+    grouped_specs = (
+        {
+            "experts.gate_up_proj": M.GroupedExpertWeightSpec(
+                checkpoint_suffix="experts.gate_up_proj",
+                role_by_chunk=((0, "w1"), (1, "w3")),
+            ),
+            "experts.down_proj": M.GroupedExpertWeightSpec(
+                checkpoint_suffix="experts.down_proj",
+                role_by_chunk=((0, "w2"),),
+            ),
+        }
+        if include_fused
+        else {}
+    )
     target = M.RoutedExpertTarget(
         module=owner,
         module_name="model.layers.0.mlp.experts",
         specs=specs,
         specs_by_suffix={spec.checkpoint_suffix: spec for spec in specs},
+        specs_by_expert_role={(spec.expert_id, spec.role): spec for spec in specs},
+        grouped_specs_by_suffix=grouped_specs,
+        expert_ids=tuple(range(num_experts)),
         expected_roles=frozenset(expected_roles),
     )
     quantizer._targets = {id(owner): target} if quantized else {}
     quantizer._all_target_suffixes = (
-        {spec.checkpoint_suffix for spec in specs} if quantized else set()
+        {
+            *(spec.checkpoint_suffix for spec in specs),
+            *grouped_specs,
+        }
+        if quantized
+        else set()
     )
     quantizer._pending = {}
     quantizer._seen_roles = {}
@@ -396,6 +577,120 @@ def test_emits_weight_and_scale_names_per_expert(nvfp4_module, monkeypatch):
     assert len(out) == 12
 
 
+@pytest.mark.parametrize("transposed", [False, True], ids=["canonical", "transposed"])
+def test_grouped_checkpoint_tensors_emit_per_expert_weights(
+    nvfp4_module: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    transposed: bool,
+) -> None:
+    M = nvfp4_module
+    calls = _fake_scaled_fp4_quant(monkeypatch, M)
+    quantizer = _quantizer_with_layer_quantized(
+        M, True, num_experts=2, include_fused=True
+    )
+    prefix = "model.layers.0.mlp.experts"
+    gate_up = torch.arange(2 * 16 * 32, dtype=torch.float32).reshape(2, 16, 32)
+    down = torch.arange(2 * 32 * 16, dtype=torch.float32).reshape(2, 32, 16)
+    loaded_gate_up = gate_up.transpose(-1, -2) if transposed else gate_up
+    loaded_down = down.transpose(-1, -2) if transposed else down
+
+    out = dict(
+        quantizer.process(
+            [
+                (f"{prefix}.gate_up_proj", loaded_gate_up),
+                (f"{prefix}.down_proj", loaded_down),
+            ]
+        )
+    )
+    quantizer.finish()
+
+    assert len(out) == 24
+    assert len(calls) == 6
+    expected_call_weights = [
+        gate_up[0, :8],
+        gate_up[0, 8:],
+        gate_up[1, :8],
+        gate_up[1, 8:],
+        down[0],
+        down[1],
+    ]
+    assert all(
+        torch.equal(call[0], expected)
+        for call, expected in zip(calls, expected_call_weights, strict=True)
+    )
+    for expert_id in range(2):
+        expert_prefix = f"{prefix}.{expert_id}"
+        for projection in ("gate_proj", "up_proj", "down_proj"):
+            for suffix in ("weight", "weight_scale", "weight_scale_2", "input_scale"):
+                assert f"{expert_prefix}.{projection}.{suffix}" in out
+        assert torch.equal(
+            out[f"{expert_prefix}.gate_proj.weight_scale_2"],
+            out[f"{expert_prefix}.up_proj.weight_scale_2"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "tensor", "match"),
+    [
+        (
+            "model.layers.0.mlp.experts.gate_up_proj",
+            torch.randn(16, 32),
+            "three-dimensional",
+        ),
+        (
+            "model.layers.0.mlp.experts.gate_up_proj",
+            torch.randn(1, 16, 32),
+            "1 experts, expected 2",
+        ),
+        (
+            "model.layers.0.mlp.experts.gate_up_proj",
+            torch.randn(2, 15, 32),
+            "cannot be split",
+        ),
+        (
+            "model.layers.0.mlp.experts.down_proj",
+            torch.randn(2, 17, 16),
+            "does not have hidden size 32",
+        ),
+    ],
+)
+def test_grouped_checkpoint_tensor_shape_is_validated(
+    nvfp4_module: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    tensor: torch.Tensor,
+    match: str,
+) -> None:
+    M = nvfp4_module
+    _fake_scaled_fp4_quant(monkeypatch, M)
+    quantizer = _quantizer_with_layer_quantized(
+        M, True, num_experts=2, include_fused=True
+    )
+
+    with pytest.raises(RuntimeError, match=match):
+        quantizer.process([(name, tensor)])
+
+
+def test_unresolved_grouped_checkpoint_name_is_fatal(
+    nvfp4_module: types.ModuleType,
+) -> None:
+    M = nvfp4_module
+    quantizer = _quantizer_with_layer_quantized(
+        M, True, num_experts=2, include_fused=True
+    )
+    quantizer._resolve_module = lambda _name: None
+
+    with pytest.raises(RuntimeError, match="could not resolve target-owned"):
+        quantizer.process(
+            [
+                (
+                    "model.layers.0.mlp.experts.gate_up_proj",
+                    torch.randn(2, 16, 32),
+                )
+            ]
+        )
+
+
 def test_rejects_swizzled_scale_shape(nvfp4_module, monkeypatch):
     """The default swizzled layout must be caught, not silently accepted.
 
@@ -458,7 +753,9 @@ def test_vllm_mapping_classifies_projection_names_without_hardcoding(
     class FakeRoutedExperts:
         ckpt_gate_proj_name, ckpt_down_proj_name, ckpt_up_proj_name = projection_names
 
-        def get_expert_mapping(self):
+        def get_expert_mapping(
+            self, include_fused: bool = False
+        ) -> list[tuple[str, str, int, str]]:
             gate, down, up = checkpoint_names
             return [
                 ("experts.w13_", f"experts.0.{gate}.", 0, "w1"),
@@ -475,6 +772,7 @@ def test_vllm_mapping_classifies_projection_names_without_hardcoding(
     assert set(target.specs_by_suffix) == {
         f"experts.0.{name}.weight" for name in checkpoint_names
     }
+    assert target.grouped_specs_by_suffix == {}
 
 
 def test_vllm_mapping_rejects_incomplete_projection_group(nvfp4_module):
@@ -485,13 +783,124 @@ def test_vllm_mapping_rejects_incomplete_projection_group(nvfp4_module):
         ckpt_down_proj_name = "w2"
         ckpt_up_proj_name = "w3"
 
-        def get_expert_mapping(self):
-            return [
+        def get_expert_mapping(
+            self, include_fused: bool = False
+        ) -> list[tuple[str, str, int, str]]:
+            mapping = [
                 ("experts.w13_", "experts.0.w1.", 0, "w1"),
                 ("experts.w2_", "experts.0.w2.", 0, "w2"),
             ]
+            return mapping
 
     with pytest.raises(RuntimeError, match="incomplete vLLM expert mapping"):
+        M._build_expert_target("model.layers.0.mlp.experts", FakeRoutedExperts())
+
+
+def test_vllm_mapping_discovers_grouped_checkpoint_tensors(
+    nvfp4_module: types.ModuleType,
+) -> None:
+    M = nvfp4_module
+
+    class FakeRoutedExperts:
+        ckpt_gate_proj_name = "gate_proj"
+        ckpt_down_proj_name = "down_proj"
+        ckpt_up_proj_name = "up_proj"
+
+        def get_expert_mapping(
+            self, include_fused: bool = False
+        ) -> list[tuple[str, str, int, str]]:
+            mapping = [
+                (
+                    "experts.w13_weight",
+                    f"experts.{expert_id}.gate_proj.",
+                    expert_id,
+                    "w1",
+                )
+                for expert_id in range(2)
+            ]
+            mapping.extend(
+                (
+                    "experts.w2_weight",
+                    f"experts.{expert_id}.down_proj.",
+                    expert_id,
+                    "w2",
+                )
+                for expert_id in range(2)
+            )
+            mapping.extend(
+                (
+                    "experts.w13_weight",
+                    f"experts.{expert_id}.up_proj.",
+                    expert_id,
+                    "w3",
+                )
+                for expert_id in range(2)
+            )
+            if include_fused:
+                return [
+                    (
+                        "experts.w13_weight",
+                        "experts.gate_up_proj",
+                        0,
+                        "w1",
+                    ),
+                    (
+                        "experts.w13_weight",
+                        "experts.gate_up_proj",
+                        1,
+                        "w3",
+                    ),
+                    ("experts.w2_weight", "experts.down_proj", 0, "w2"),
+                    *mapping,
+                ]
+            return mapping
+
+    target = M._build_expert_target("model.layers.0.mlp.experts", FakeRoutedExperts())
+
+    assert target.expert_ids == (0, 1)
+    assert target.grouped_specs_by_suffix == {
+        "experts.gate_up_proj": M.GroupedExpertWeightSpec(
+            checkpoint_suffix="experts.gate_up_proj",
+            role_by_chunk=((0, "w1"), (1, "w3")),
+        ),
+        "experts.down_proj": M.GroupedExpertWeightSpec(
+            checkpoint_suffix="experts.down_proj",
+            role_by_chunk=((0, "w2"),),
+        ),
+    }
+
+
+def test_vllm_mapping_rejects_incomplete_grouped_projection(
+    nvfp4_module: types.ModuleType,
+) -> None:
+    M = nvfp4_module
+
+    class FakeRoutedExperts:
+        ckpt_gate_proj_name = "gate_proj"
+        ckpt_down_proj_name = "down_proj"
+        ckpt_up_proj_name = "up_proj"
+
+        def get_expert_mapping(
+            self, include_fused: bool = False
+        ) -> list[tuple[str, str, int, str]]:
+            mapping = [
+                ("experts.w13_weight", "experts.0.gate_proj.", 0, "w1"),
+                ("experts.w2_weight", "experts.0.down_proj.", 0, "w2"),
+                ("experts.w13_weight", "experts.0.up_proj.", 0, "w3"),
+            ]
+            if include_fused:
+                return [
+                    (
+                        "experts.w13_weight",
+                        "experts.gate_up_proj",
+                        0,
+                        "w1",
+                    ),
+                    *mapping,
+                ]
+            return mapping
+
+    with pytest.raises(RuntimeError, match="unsupported vLLM grouped expert mapping"):
         M._build_expert_target("model.layers.0.mlp.experts", FakeRoutedExperts())
 
 
@@ -790,6 +1199,11 @@ def test_prequantized_extension_uses_native_ipc_reload(
     monkeypatch.setattr(vllm_backend.gc, "collect", lambda: None)
     monkeypatch.setattr(vllm_backend.torch.cuda, "empty_cache", lambda: None)
     monkeypatch.setattr(
+        vllm_backend,
+        "_refresh_routed_experts_capture_after_reload",
+        lambda runner: call_order.append("refresh_capture"),
+    )
+    monkeypatch.setattr(
         vllm_backend.torch.accelerator,
         "synchronize",
         lambda: call_order.append("final_sync"),
@@ -824,6 +1238,7 @@ def test_prequantized_extension_uses_native_ipc_reload(
         "ack_1",
         "recv_complete",
         "reload_done",
+        "refresh_capture",
         "final_sync",
         "ack_2",
     ]
