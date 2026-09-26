@@ -131,6 +131,6 @@ logger:
 cluster:
   gpus_per_node: 4
   num_nodes: 34
-  # Keep each 16-node policy block contiguous within a physical NVL72 domain.
-  # The launcher allocates two complete domains and leaves two rollout nodes.
-  segment_size: 16
+  # Greedy one-node segments keep policy ranks topology-sorted while reserving
+  # the final two nodes together in one domain for the rollout TP8 group.
+  segment_size: 1

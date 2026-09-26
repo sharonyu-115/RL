@@ -4,11 +4,11 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 source "$SCRIPT_DIR/common.env"
 
-# Allocate two complete 18-node NVL72 domains. The recipe consumes 34 nodes:
-# two topology-sorted 16-node policy blocks plus two rollout nodes.
-NUM_NODES=36
+# Topology-greedy placement consumes 32 policy nodes first and leaves the final
+# two nodes together in one NVLink domain for the rollout TP8 group.
+NUM_NODES=34
 GPUS_PER_NODE=4
-SEGMENT_SIZE=18
+SEGMENT_SIZE=1
 STEPS_PER_RUN=30
 MAX_STEPS=30
 NUM_RUNS=1
