@@ -83,6 +83,11 @@ policy:
     enabled: false
   dynamic_batching:
     enabled: true
+    # The PyTorch EP128 dispatcher materializes a contiguous all-reduce clone.
+    # Keep its per-rank activation below GB200 memory capacity for both forward
+    # logprob inference and the higher-memory backward pass.
+    train_mb_tokens: 4096
+    logprob_mb_tokens: 4096
   generation:
     max_new_tokens: 4096
     colocated:
