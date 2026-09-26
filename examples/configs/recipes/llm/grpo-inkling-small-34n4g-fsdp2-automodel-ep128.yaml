@@ -72,7 +72,9 @@ policy:
         attn: sdpa
         linear: torch
         rms_norm: torch_fp32
-        experts: torch_mm
+        # EP64 owns only two routed experts per rank. The per-expert loop avoids
+        # a deterministic torch._grouped_mm rank stall on long uneven batches.
+        experts: torch
         # HybridEP's native RDMA buffer allocator crashes on this two-domain
         # EP128 deployment. Use the correctness-first PyTorch all-to-all path.
         dispatcher: torch
