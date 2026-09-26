@@ -8,7 +8,6 @@ source "$SCRIPT_DIR/common.env"
 # two nodes together in one NVLink domain for the rollout TP8 group.
 NUM_NODES=34
 GPUS_PER_NODE=4
-SEGMENT_SIZE=1
 STEPS_PER_RUN=30
 MAX_STEPS=30
 NUM_RUNS=1
