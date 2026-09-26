@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 source "$SCRIPT_DIR/common.env"
 
 # Allocate two complete 18-node NVL72 domains. The recipe consumes 34 nodes:
-# eight topology-sorted four-node policy segments plus two rollout nodes.
+# two topology-sorted 16-node policy segments plus two rollout nodes.
 NUM_NODES=36
 GPUS_PER_NODE=4
 SEGMENT_SIZE=18
