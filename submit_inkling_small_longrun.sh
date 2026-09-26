@@ -64,4 +64,5 @@ export COMMAND CONTAINER
 export MOUNTS="/lustre:/lustre,$WORK_DIR:/opt/nemo-rl"
 sbatch --nodes=34 --ntasks-per-node=1 --exclusive --account=general_sa \
     --partition=batch,tcpo,36x2-a01r --time=03:59:00 \
-    --job-name="$RUN" "${DEPENDENCY[@]}" "${SUBMIT_OPTIONS[@]}" ray.sub
+    --job-name=general_sa-inkling.long-ep128 \
+    "${DEPENDENCY[@]}" "${SUBMIT_OPTIONS[@]}" ray.sub
