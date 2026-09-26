@@ -59,6 +59,9 @@ policy:
     env_vars:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       NRL_REFIT_NUM_BUFFERS: '1'
+      # Large multi-domain FSDP collectives can hang on the NVLS path; the
+      # maintained 32+ node GB200 recipes disable it as well.
+      NCCL_NVLS_ENABLE: '0'
     automodel_kwargs:
       freeze_config:
         freeze_vision_tower: true
