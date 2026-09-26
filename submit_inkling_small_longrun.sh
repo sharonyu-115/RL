@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 WORK_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-RUN=grpo-inkling-small-16n4g-fsdp2-automodel-ep64
+RUN=grpo-inkling-small-34n4g-fsdp2-automodel-ep128
 MODEL_DIR=${MODEL_DIR:-/lustre/fsw/general_sa/shuangy/models/thinkingmachines/Inkling-Small}
 CONTAINER=${CONTAINER:-/lustre/fsw/general_sa/shuangy/images/nemo-rl-inkling-main-0aa-tf514-20260924-v9.sqsh}
 PROJECT=${PROJECT:-nemo-rl-Inkling}
@@ -62,6 +62,6 @@ printf -v COMMAND '%q ' "${DRIVER[@]}" \
     "logger.wandb.project=$PROJECT" "logger.wandb.name=$RUN"
 export COMMAND CONTAINER
 export MOUNTS="/lustre:/lustre,$WORK_DIR:/opt/nemo-rl"
-sbatch --nodes=18 --ntasks-per-node=1 --exclusive --account=general_sa \
+sbatch --nodes=34 --ntasks-per-node=1 --exclusive --account=general_sa \
     --partition=batch,tcpo,36x2-a01r --time=03:59:00 \
     --job-name="$RUN" "${DEPENDENCY[@]}" "${SUBMIT_OPTIONS[@]}" ray.sub

@@ -11,7 +11,7 @@ loss_fn:
   truncated_importance_sampling_type: tis
   truncated_importance_sampling_ratio: 2
 checkpointing:
-  checkpoint_dir: results/grpo-inkling-small-16n4g-fsdp2-automodel-ep64
+  checkpoint_dir: results/grpo-inkling-small-34n4g-fsdp2-automodel-ep128
   keep_top_k: 1
   save_period: 100
   checkpoint_must_save_by: 00:03:45:00
@@ -23,7 +23,9 @@ policy:
     tokenizer_kwargs:
       eos_token: <|content_model_end_sampling|>
       pad_token: <|content_model_end_sampling|>
-  train_global_batch_size: 64
+  # 32 four-GPU GB200 policy nodes leave two routed experts per rank; the
+  # remaining two nodes host the non-colocated rollout engine.
+  train_global_batch_size: 128
   train_micro_batch_size: 1
   logprob_batch_size: 1
   make_sequence_length_divisible_by: 1024
@@ -52,7 +54,7 @@ policy:
   - milestones:
     - 10
   dtensor_cfg:
-    expert_parallel_size: 64
+    expert_parallel_size: 128
     activation_checkpointing: true
     env_vars:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
@@ -117,13 +119,13 @@ env:
     num_workers: 16
     math_verify_impl: dapo_math_verify
 logger:
-  log_dir: logs/grpo-inkling-small-16n4g-fsdp2-automodel-ep64
+  log_dir: logs/grpo-inkling-small-34n4g-fsdp2-automodel-ep128
   wandb_enabled: true
   tensorboard_enabled: true
   wandb:
     entity: nv-welcome
     project: nemo-rl-Inkling
-    name: grpo-inkling-small-16n4g-fsdp2-automodel-ep64
+    name: grpo-inkling-small-34n4g-fsdp2-automodel-ep128
 cluster:
   gpus_per_node: 4
-  num_nodes: 18
+  num_nodes: 34

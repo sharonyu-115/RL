@@ -1,8 +1,10 @@
 #!/bin/bash
+set -euo pipefail
+
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 source "$SCRIPT_DIR/common.env"
 
-NUM_NODES=18
+NUM_NODES=34
 GPUS_PER_NODE=4
 STEPS_PER_RUN=30
 MAX_STEPS=30
