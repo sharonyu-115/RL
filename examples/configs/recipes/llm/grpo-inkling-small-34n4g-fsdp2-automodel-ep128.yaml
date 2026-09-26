@@ -59,6 +59,11 @@ policy:
     env_vars:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       NRL_REFIT_NUM_BUFFERS: '1'
+      # The 128-rank EP group is split across two topology-sorted 16-node
+      # GB200 NVLink domains (64 active policy ranks per domain).
+      NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN: '64'
+      NUM_OF_TOKENS_PER_CHUNK_COMBINE_API: '128'
+      USE_MNNVL: '1'
     automodel_kwargs:
       freeze_config:
         freeze_vision_tower: true
@@ -129,3 +134,6 @@ logger:
 cluster:
   gpus_per_node: 4
   num_nodes: 34
+  # Keep each 64-rank HybridEP domain contiguous. The launcher allocates two
+  # complete 18-node NVL72 domains; 32 nodes train and two host rollout.
+  segment_size: 16

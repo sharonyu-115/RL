@@ -4,8 +4,11 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 source "$SCRIPT_DIR/common.env"
 
-NUM_NODES=34
+# Allocate two complete 18-node NVL72 domains. The recipe consumes 34 nodes:
+# two topology-sorted 16-node policy segments plus two rollout nodes.
+NUM_NODES=36
 GPUS_PER_NODE=4
+SEGMENT_SIZE=18
 STEPS_PER_RUN=30
 MAX_STEPS=30
 NUM_RUNS=1
