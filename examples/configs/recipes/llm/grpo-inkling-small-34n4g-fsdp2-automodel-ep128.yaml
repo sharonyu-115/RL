@@ -59,12 +59,6 @@ policy:
     env_vars:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       NRL_REFIT_NUM_BUFFERS: '1'
-      # EP128 spans two topology-sorted GB200 NVLink domains with 64 active
-      # policy ranks in each physical 72-rank domain.
-      NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN: '64'
-      NUM_OF_TOKENS_PER_CHUNK_COMBINE_API: '128'
-      NVLINK_DOMAIN_SIZE: '72'
-      USE_MNNVL: '1'
     automodel_kwargs:
       freeze_config:
         freeze_vision_tower: true
@@ -76,7 +70,9 @@ policy:
         linear: torch
         rms_norm: torch_fp32
         experts: torch_mm
-        dispatcher: hybridep
+        # HybridEP's native RDMA buffer allocator crashes on this two-domain
+        # EP128 deployment. Use the correctness-first PyTorch all-to-all path.
+        dispatcher: torch
         gate_precision: float32
         enable_hf_state_dict_adapter: true
         enable_fsdp_optimizations: true
@@ -135,6 +131,6 @@ logger:
 cluster:
   gpus_per_node: 4
   num_nodes: 34
-  # Keep each 64-rank HybridEP domain contiguous. The launcher allocates two
-  # complete 18-node NVL72 domains; 32 nodes train and two host rollout.
+  # Keep each 16-node policy block contiguous within a physical NVL72 domain.
+  # The launcher allocates two complete domains and leaves two rollout nodes.
   segment_size: 16
