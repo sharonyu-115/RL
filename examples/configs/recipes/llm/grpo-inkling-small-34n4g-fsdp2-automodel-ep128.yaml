@@ -86,8 +86,8 @@ policy:
     # The PyTorch EP128 dispatcher materializes a contiguous all-reduce clone.
     # Keep its per-rank activation below GB200 memory capacity for both forward
     # logprob inference and the higher-memory backward pass.
-    train_mb_tokens: 4096
-    logprob_mb_tokens: 4096
+    train_mb_tokens: 6144
+    logprob_mb_tokens: 6144
   generation:
     max_new_tokens: 4096
     colocated:
