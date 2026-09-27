@@ -11,7 +11,7 @@ loss_fn:
   truncated_importance_sampling_type: tis
   truncated_importance_sampling_ratio: 2
 checkpointing:
-  checkpoint_dir: results/grpo-inkling-small-34n4g-fsdp2-automodel-ep128
+  checkpoint_dir: results/grpo-inkling-small-33n4g-fsdp2-automodel-ep128
   keep_top_k: 1
   save_period: 100
   checkpoint_must_save_by: 00:03:45:00
@@ -24,7 +24,7 @@ policy:
       eos_token: <|content_model_end_sampling|>
       pad_token: <|content_model_end_sampling|>
   # 32 four-GPU GB200 policy nodes leave two routed experts per rank; the
-  # remaining two nodes host the non-colocated rollout engine.
+  # remaining GB200 node hosts the non-colocated rollout engine at TP4.
   train_global_batch_size: 128
   train_micro_batch_size: 1
   logprob_batch_size: 1
@@ -101,9 +101,8 @@ policy:
     enabled: false
   dynamic_batching:
     enabled: true
-    # The PyTorch EP128 dispatcher materializes a contiguous all-reduce clone.
-    # Keep its per-rank activation below GB200 memory capacity for both forward
-    # logprob inference and the higher-memory backward pass.
+    # Bound rank-local activation and expert work for both forward logprob
+    # inference and the higher-memory backward pass.
     train_mb_tokens: 6144
     logprob_mb_tokens: 6144
   generation:
@@ -111,7 +110,7 @@ policy:
     colocated:
       enabled: false
       resources:
-        num_nodes: 2
+        num_nodes: 1
         gpus_per_node: 4
     refit_transport: nixl
     refit_cfg:
@@ -119,7 +118,7 @@ policy:
         device: cpu
         update_weights_bucket_memory_ratio: 0.01
     vllm_cfg:
-      tensor_parallel_size: 8
+      tensor_parallel_size: 4
       skip_tokenizer_init: false
       gpu_memory_utilization: 0.8
       enforce_eager: true
@@ -146,16 +145,16 @@ env:
     num_workers: 16
     math_verify_impl: dapo_math_verify
 logger:
-  log_dir: logs/grpo-inkling-small-34n4g-fsdp2-automodel-ep128
+  log_dir: logs/grpo-inkling-small-33n4g-fsdp2-automodel-ep128
   wandb_enabled: true
   tensorboard_enabled: true
   wandb:
     entity: nv-welcome
     project: nemo-rl-Inkling
-    name: grpo-inkling-small-34n4g-fsdp2-automodel-ep128
+    name: grpo-inkling-small-33n4g-fsdp2-automodel-ep128
 cluster:
   gpus_per_node: 4
-  num_nodes: 34
+  num_nodes: 33
   # Greedy one-node segments keep policy ranks topology-sorted while reserving
-  # the final two nodes together in one domain for the rollout TP8 group.
+  # the final node for the rollout TP4 group.
   segment_size: 1
