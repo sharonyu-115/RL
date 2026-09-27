@@ -59,6 +59,11 @@ policy:
   dtensor_cfg:
     expert_parallel_size: 128
     activation_checkpointing: true
+    # The MoE parallelizer defaults outer decoder blocks to ZeRO-2-style
+    # resharding. Inkling's large shared expert then leaves about 4 GiB resident
+    # per layer during eval, exhausting a GB200 before the final blocks unshard.
+    moe_parallelizer:
+      reshard_after_forward: true
     # EP128 leaves each rank responsible for two complete routed experts. Grace
     # CPU offload keeps optimizer state and inactive layer weights outside the
     # 192-GiB GPU budget; the expert FSDP units reshard after every layer.
