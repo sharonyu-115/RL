@@ -11,7 +11,7 @@ loss_fn:
   truncated_importance_sampling_type: tis
   truncated_importance_sampling_ratio: 2
 checkpointing:
-  checkpoint_dir: results/grpo-inkling-small-33n4g-fsdp2-automodel-ep128
+  checkpoint_dir: results/grpo-inkling-small-34n4g-fsdp2-automodel-ep128
   keep_top_k: 1
   save_period: 100
   checkpoint_must_save_by: 00:03:45:00
@@ -24,7 +24,9 @@ policy:
       eos_token: <|content_model_end_sampling|>
       pad_token: <|content_model_end_sampling|>
   # 32 four-GPU GB200 policy nodes leave two routed experts per rank; the
-  # remaining GB200 node hosts the non-colocated rollout engine at TP4.
+  # remaining two nodes host the non-colocated rollout engine at TP8. TP4 fits
+  # in memory on one GB200 node but showed a rare, severe rollout/policy
+  # logprob mismatch; TP8 is the validated correctness topology.
   train_global_batch_size: 128
   train_micro_batch_size: 1
   logprob_batch_size: 1
@@ -110,7 +112,7 @@ policy:
     colocated:
       enabled: false
       resources:
-        num_nodes: 1
+        num_nodes: 2
         gpus_per_node: 4
     refit_transport: nixl
     refit_cfg:
@@ -118,7 +120,7 @@ policy:
         device: cpu
         update_weights_bucket_memory_ratio: 0.01
     vllm_cfg:
-      tensor_parallel_size: 4
+      tensor_parallel_size: 8
       skip_tokenizer_init: false
       gpu_memory_utilization: 0.8
       enforce_eager: true
@@ -145,16 +147,16 @@ env:
     num_workers: 16
     math_verify_impl: dapo_math_verify
 logger:
-  log_dir: logs/grpo-inkling-small-33n4g-fsdp2-automodel-ep128
+  log_dir: logs/grpo-inkling-small-34n4g-fsdp2-automodel-ep128
   wandb_enabled: true
   tensorboard_enabled: true
   wandb:
     entity: nv-welcome
     project: nemo-rl-Inkling
-    name: grpo-inkling-small-33n4g-fsdp2-automodel-ep128
+    name: grpo-inkling-small-34n4g-fsdp2-automodel-ep128
 cluster:
   gpus_per_node: 4
-  num_nodes: 33
+  num_nodes: 34
   # Greedy one-node segments keep policy ranks topology-sorted while reserving
-  # the final node for the rollout TP4 group.
+  # the final two nodes together in one domain for the rollout TP8 group.
   segment_size: 1

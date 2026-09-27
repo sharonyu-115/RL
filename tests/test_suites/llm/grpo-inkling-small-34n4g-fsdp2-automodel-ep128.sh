@@ -5,8 +5,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 source "$SCRIPT_DIR/common.env"
 
 # Topology-greedy placement consumes 32 policy nodes first and leaves the final
-# GB200 node for the rollout TP4 group.
-NUM_NODES=33
+# two GB200 nodes together in one NVLink domain for the rollout TP8 group.
+NUM_NODES=34
 GPUS_PER_NODE=4
 STEPS_PER_RUN=30
 MAX_STEPS=30
