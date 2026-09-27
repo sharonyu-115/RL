@@ -28,7 +28,10 @@ policy:
   train_global_batch_size: 128
   train_micro_batch_size: 1
   logprob_batch_size: 1
-  make_sequence_length_divisible_by: 1024
+  # TP1/CP1 does not require MiniMax's CP8-aligned 1024-token padding. The
+  # smaller multiple avoids padding short Inkling responses into a larger MoE
+  # activation bucket.
+  make_sequence_length_divisible_by: 256
   max_total_sequence_length: 8192
   logprob_chunk_size: 1024
   offload_optimizer_for_logprob: true
@@ -56,6 +59,10 @@ policy:
   dtensor_cfg:
     expert_parallel_size: 128
     activation_checkpointing: true
+    # EP128 leaves each rank responsible for two complete routed experts. Grace
+    # CPU offload keeps optimizer state and inactive layer weights outside the
+    # 192-GiB GPU budget; the expert FSDP units reshard after every layer.
+    cpu_offload: true
     env_vars:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       NRL_REFIT_NUM_BUFFERS: '1'
@@ -72,7 +79,7 @@ policy:
         attn: sdpa
         linear: torch
         rms_norm: torch_fp32
-        # EP64 owns only two routed experts per rank. Grouped matmul avoids the
+        # EP128 owns only two routed experts per rank. Grouped matmul avoids the
         # multi-GiB BF16-to-FP32 temporary required by the per-expert loop.
         experts: torch_mm
         # HybridEP's native RDMA buffer allocator crashes on this two-domain
