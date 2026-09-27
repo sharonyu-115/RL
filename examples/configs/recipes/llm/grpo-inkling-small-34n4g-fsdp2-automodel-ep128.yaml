@@ -90,10 +90,10 @@ policy:
         # HybridEP's native RDMA buffer allocator crashes on this two-domain
         # EP128 deployment. Use the correctness-first PyTorch all-to-all path.
         dispatcher: torch
-        # DP=1 means every EP rank receives the same policy microbatch. Filter
-        # those replicated tokens locally and all-reduce expert outputs instead
-        # of all-gathering 128 copies of the activation on every rank.
-        torch_dispatcher_replicated_input: true
+        # Policy batches are rank-local even with DP=1. Route only the selected
+        # token/expert assignments to their owning EP rank instead of gathering
+        # every rank's full activation on all 128 ranks.
+        torch_dispatcher_all_to_all: true
         gate_precision: float32
         enable_hf_state_dict_adapter: true
         enable_fsdp_optimizations: true
