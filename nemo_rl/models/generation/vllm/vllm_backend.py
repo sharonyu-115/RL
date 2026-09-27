@@ -1535,12 +1535,22 @@ class VllmInternalWorkerExtension(RefitBuilderInterface):
                             close_weight_iterator()
             else:
                 native_layerwise_refit = self._uses_native_layerwise_refit("collective")
+
+                def load_weights(weights: list[tuple[str, torch.Tensor]]) -> None:
+                    self._load_weights(weights)
+                    if native_layerwise_refit:
+                        # Native TRTLLM/FP8 loaders may defer CUDA work to an
+                        # internal stream. Fence each batch while its packed
+                        # receive buffer is still alive; synchronizing only the
+                        # collective stream does not protect that lifetime.
+                        torch.cuda.synchronize()
+
                 with self._weight_update_lifecycle("collective") as finalize:
                     packed_broadcast_consumer(
                         iterator=iter(self.state_dict_info.items()),
                         group=self.model_update_group,
                         src=0,
-                        post_unpack_func=self._load_weights,
+                        post_unpack_func=load_weights,
                         # Double buffering (num_buffers > 1) causes a race condition
                         # when using native_layerwise_refit: deferred weight_loader
                         # replays may read a buffer while the other stream refills it.

@@ -1086,7 +1086,7 @@ def test_update_weights_from_collective_reraises_on_fatal_native_refit(monkeypat
 
 
 @pytest.mark.vllm
-def test_native_collective_refit_uses_one_transport_buffer(monkeypatch):
+def test_native_collective_refit_fences_each_single_buffer_batch(monkeypatch):
     from nemo_rl.models.generation.vllm import vllm_backend
 
     ext, _ = _make_collective_update_extension(vllm_backend)
@@ -1097,18 +1097,28 @@ def test_native_collective_refit_uses_one_transport_buffer(monkeypatch):
         yield lambda: None
 
     ext._weight_update_lifecycle = lifecycle
-    observed_num_buffers = None
+    observations = []
 
     def consume(*, iterator, group, src, post_unpack_func, num_buffers=None):
-        nonlocal observed_num_buffers
-        observed_num_buffers = num_buffers
+        observations.append(("num_buffers", num_buffers))
+        post_unpack_func([("model.weight", torch.ones(1))])
 
+    ext._load_weights = lambda _weights: observations.append(("load", None))
     monkeypatch.setattr(vllm_backend, "packed_broadcast_consumer", consume)
     monkeypatch.setattr(vllm_backend.gc, "collect", lambda: None)
     monkeypatch.setattr(vllm_backend.torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(
+        vllm_backend.torch.cuda,
+        "synchronize",
+        lambda: observations.append(("synchronize", None)),
+    )
 
     assert ext.update_weights_from_collective() is True
-    assert observed_num_buffers == 1
+    assert observations == [
+        ("num_buffers", 1),
+        ("load", None),
+        ("synchronize", None),
+    ]
 
 
 @pytest.mark.vllm
