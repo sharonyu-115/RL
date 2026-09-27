@@ -114,11 +114,10 @@ policy:
       resources:
         num_nodes: 2
         gpus_per_node: 4
-    refit_transport: nixl
-    refit_cfg:
-      nixl:
-        device: cpu
-        update_weights_bucket_memory_ratio: 0.01
+    # Match the MiniMax reference's default collective refit transport. A replay
+    # from the clean step-10 checkpoint completed with finite rollout logprobs,
+    # while both CPU and CUDA NIXL refits failed for this topology.
+    refit_transport: null
     vllm_cfg:
       tensor_parallel_size: 8
       skip_tokenizer_init: false
