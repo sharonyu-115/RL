@@ -16,6 +16,7 @@ import gc
 import warnings
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from dataclasses import dataclass
 from typing import Any, Generator, Iterable, Optional, cast
 
 import ray
@@ -365,6 +366,17 @@ def _maybe_adapt_tensor_to_hf(
     return [(fqn, tensor)]
 
 
+@dataclass
+class _FullBatchTrainStep:
+    """State retained between the Stage 1 single-controller lifecycle calls."""
+
+    loss_fn: LossFunction
+    gbs: int
+    mbs: int
+    dispatched: bool
+    metrics: Optional[dict[str, Any]]
+
+
 # Classes with @ray.remote can't be inherited from, so we split the implementation out.
 # This is useful when using worker extension classes.
 class AutomodelPolicyWorkerImpl(
@@ -424,6 +436,7 @@ class AutomodelPolicyWorkerImpl(
 
         # Store configuration
         self.cfg = config
+        self._train_step_state: Optional[_FullBatchTrainStep] = None
 
         # Reconstruct tokenizer/processor locally to avoid pickling across
         # incompatible transformers versions (v4 head node → v5 worker).
@@ -623,7 +636,31 @@ class AutomodelPolicyWorkerImpl(
         check_dim_skip_keys: Optional[Iterable[str]] = None,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
-        self.timer.start("train")
+        if self._train_step_state is not None:
+            raise RuntimeError("train() cannot run while a split train step is open")
+        with self.timer.time("train"):
+            return self._train_full_batches(
+                data,
+                loss_fn,
+                eval_mode=eval_mode,
+                gbs=gbs,
+                mbs=mbs,
+                check_dim_skip_keys=check_dim_skip_keys,
+                defer_update=False,
+            )
+
+    def _train_full_batches(
+        self,
+        data: BatchedDataDict[Any],
+        loss_fn: LossFunction,
+        *,
+        eval_mode: bool,
+        gbs: Optional[int],
+        mbs: Optional[int],
+        check_dim_skip_keys: Optional[Iterable[str]],
+        defer_update: bool,
+    ) -> dict[str, Any]:
+        """Run the established training path, optionally retaining one batch's gradients."""
         if gbs is None:
             gbs = self.cfg["train_global_batch_size"]
         if mbs is None:
@@ -760,61 +797,16 @@ class AutomodelPolicyWorkerImpl(
                             all_mb_metrics.append(loss_metrics)
 
                 grad_norm: Optional[float | torch.Tensor] = None
-                if not eval_mode:
-                    # The policy is clipped on its own (Megatron-path parity):
-                    # a shared global clip let the draft's larger gradients
-                    # scale down the policy's updates on every step. The draft
-                    # is clipped separately below.
-                    grad_norm = scale_grads_and_clip_grad_norm(
-                        self.max_grad_norm,
-                        [self.model],
-                        norm_type=2.0,
-                        pp_enabled=False,
-                        device_mesh=self.device_mesh,
-                        moe_mesh=self.moe_mesh,
-                        ep_axis_name="ep"
-                        if self.moe_mesh is not None
-                        and "ep" in self.moe_mesh.mesh_dim_names
-                        else None,
-                        pp_axis_name=None,
-                        foreach=True,
-                        num_label_tokens=1,
-                        dp_group_size=self.dp_size * self.cp_size,
-                    )
-                    grad_norm = torch.tensor(
-                        grad_norm, device="cpu", dtype=torch.float32
-                    )
-                    warn_if_inf_grad_norm(grad_norm)
-
-                    # Independent draft clip with the same max norm; the
-                    # returned pre-clip norm doubles as the reported metric.
-                    if draft_runtime is not None:
-                        draft_grad_norm = float(
-                            scale_grads_and_clip_grad_norm(
-                                self.max_grad_norm,
-                                [self.draft_model],
-                                norm_type=2.0,
-                                pp_enabled=False,
-                                device_mesh=self.device_mesh,
-                                moe_mesh=None,
-                                ep_axis_name=None,
-                                pp_axis_name=None,
-                                foreach=True,
-                                num_label_tokens=1,
-                                dp_group_size=self.dp_size * self.cp_size,
-                            )
-                        )
-
-                    # Update parameters and the non-gradient MoE routing bias.
-                    self.optimizer.step()
-                    self._update_moe_gate_bias_if_supported()
+                if not eval_mode and not defer_update:
+                    grad_norm, draft_grad_norm = self._step_optimizer(draft_runtime)
 
                 losses.append(torch.tensor(mb_losses).sum().item())
 
-            # release gradient memory before rollouts
-            self.optimizer.zero_grad()
+            # The split caller owns gradients until finish or abort.
+            if not defer_update:
+                self.optimizer.zero_grad()
             # increment scheduler after all batches in rollout are processed
-            if not eval_mode:
+            if not eval_mode and not defer_update:
                 self.scheduler.step()
             # dynamic batch and sequence dims causes alot of fragmentation, so clear
             # the memory allocator before moving on
@@ -836,8 +828,165 @@ class AutomodelPolicyWorkerImpl(
                     draft_grad_norm, device="cpu", dtype=torch.float32
                 )
 
-            self.timer.stop("train")
             return metrics
+
+    def _step_optimizer(
+        self, draft_runtime: Any
+    ) -> tuple[torch.Tensor, Optional[float]]:
+        """Clip gradients and update parameters using the legacy training semantics."""
+        draft_grad_norm = None
+        # The policy is clipped on its own (Megatron-path parity):
+        # a shared global clip let the draft's larger gradients
+        # scale down the policy's updates on every step. The draft
+        # is clipped separately below.
+        grad_norm = scale_grads_and_clip_grad_norm(
+            self.max_grad_norm,
+            [self.model],
+            norm_type=2.0,
+            pp_enabled=False,
+            device_mesh=self.device_mesh,
+            moe_mesh=self.moe_mesh,
+            ep_axis_name="ep"
+            if self.moe_mesh is not None and "ep" in self.moe_mesh.mesh_dim_names
+            else None,
+            pp_axis_name=None,
+            foreach=True,
+            num_label_tokens=1,
+            dp_group_size=self.dp_size * self.cp_size,
+        )
+        grad_norm = torch.tensor(grad_norm, device="cpu", dtype=torch.float32)
+        warn_if_inf_grad_norm(grad_norm)
+
+        # Independent draft clip with the same max norm; the
+        # returned pre-clip norm doubles as the reported metric.
+        if draft_runtime is not None:
+            draft_grad_norm = float(
+                scale_grads_and_clip_grad_norm(
+                    self.max_grad_norm,
+                    [self.draft_model],
+                    norm_type=2.0,
+                    pp_enabled=False,
+                    device_mesh=self.device_mesh,
+                    moe_mesh=None,
+                    ep_axis_name=None,
+                    pp_axis_name=None,
+                    foreach=True,
+                    num_label_tokens=1,
+                    dp_group_size=self.dp_size * self.cp_size,
+                )
+            )
+
+        # Update parameters and the non-gradient MoE routing bias.
+        self.optimizer.step()
+        self._update_moe_gate_bias_if_supported()
+
+        return grad_norm, draft_grad_norm
+
+    def begin_train_step(
+        self,
+        loss_fn: LossFunction,
+        gbs: Optional[int] = None,
+        mbs: Optional[int] = None,
+    ) -> None:
+        """Open a full-batch SC step without advancing parameters or the scheduler."""
+        if self._train_step_state is not None:
+            raise RuntimeError("a train step is already open; finish or abort it first")
+        if (
+            self.tp_size != 1
+            or self.cp_size != 1
+            or self.cpu_offload
+            or self.is_vlm
+            or self.is_moe_model
+            or self.lora_enabled
+            or self.draft_model is not None
+            or self.enable_seq_packing
+            or self.cfg["dynamic_batching"]["enabled"]
+            or self.cfg["automodel_cfg"].get("expert_parallel_size") not in (None, 1)
+            or self.cfg["automodel_cfg"].get("dp_replicate_size") not in (None, 1)
+        ):
+            raise ValueError(
+                "AutoModel SC Stage 1 requires dense text full-parameter training, "
+                "TP=CP=EP=1, fixed microbatches, no CPU offload or draft model"
+            )
+        if self.optimizer is None or self.scheduler is None:
+            raise RuntimeError("a split train step requires an optimizer and scheduler")
+        batch_size = self.cfg["train_global_batch_size"] if gbs is None else gbs
+        micro_batch_size = self.cfg["train_micro_batch_size"] if mbs is None else mbs
+        if (
+            batch_size <= 0
+            or micro_batch_size <= 0
+            or batch_size % (self.dp_size * micro_batch_size) != 0
+        ):
+            raise ValueError("GBS must be positive and divisible by DP size × MBS")
+        self.model.train()
+        self.optimizer.zero_grad()
+        self._train_step_state = _FullBatchTrainStep(
+            loss_fn=loss_fn,
+            gbs=batch_size,
+            mbs=micro_batch_size,
+            dispatched=False,
+            metrics=None,
+        )
+
+    def train_microbatch(self, data: BatchedDataDict[Any]) -> None:
+        """Run one complete DP-sharded batch, retaining gradients until finish.
+
+        This dispatch can execute many backend forward/backward microbatches.
+        Multiple dispatches per step require the later streaming implementation.
+        """
+        state = self._train_step_state
+        if state is None:
+            raise RuntimeError("begin_train_step must precede train_microbatch")
+        if state.dispatched:
+            raise RuntimeError(
+                "Stage 1 accepts exactly one full-batch dispatch per step"
+            )
+        state.dispatched = True
+        # Check every rank before any forward collective; reject rather than
+        # silently truncate an oversized batch or hang on unequal participation.
+        sizes = torch.tensor([data.size, -data.size], device="cuda")
+        torch.distributed.all_reduce(
+            sizes, op=torch.distributed.ReduceOp.MIN, group=self.dp_mesh.get_group()
+        )
+        minimum, negative_maximum = sizes.tolist()
+        expected = state.gbs // self.dp_size
+        if minimum != expected or -negative_maximum != expected:
+            raise ValueError(
+                f"Stage 1 requires {expected} rows on every DP rank; "
+                f"received between {minimum} and {-negative_maximum}. Abort this step."
+            )
+        with self.timer.time("train"):
+            state.metrics = self._train_full_batches(
+                data,
+                state.loss_fn,
+                eval_mode=False,
+                gbs=state.gbs,
+                mbs=state.mbs,
+                check_dim_skip_keys=None,
+                defer_update=True,
+            )
+
+    def finish_train_step(self) -> dict[str, Any]:
+        """Commit exactly one optimizer/scheduler update and release the open step."""
+        state = self._train_step_state
+        if state is None or state.metrics is None:
+            raise RuntimeError("finish requires one successfully completed full batch")
+        try:
+            grad_norm, _ = self._step_optimizer(draft_runtime=None)
+            self.scheduler.step()
+            state.metrics["grad_norm"] = grad_norm
+            return state.metrics
+        finally:
+            # Never retry a partially committed optimizer/scheduler update.
+            self._train_step_state = None
+            self.optimizer.zero_grad()
+            torch.cuda.empty_cache()
+
+    def abort_train_step(self) -> None:
+        """Discard an open step without advancing the optimizer or scheduler."""
+        self._train_step_state = None
+        if self.optimizer is not None:
+            self.optimizer.zero_grad()
 
     @wrap_with_nvtx_name("automodel_policy_worker/get_logprobs")
     def get_logprobs(

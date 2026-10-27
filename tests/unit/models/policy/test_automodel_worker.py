@@ -292,11 +292,8 @@ def test_prepare_for_training_restores_optimizer(monkeypatch):
 def test_prepare_for_lp_inference_keep_train_buffers(monkeypatch, keep_train_buffers):
     """``keep_train_buffers`` suppresses the optimizer offload and nothing else.
 
-    ``True`` is not reachable from an Automodel run today -- the split train API
-    that leaves a step open (begin_train_step / train_microbatch /
-    finish_train_step) exists only on the Megatron worker -- but the branch is
-    here, so pin it: inverted, it would strand the optimizer on CPU for the rest
-    of the step.
+    The split API can leave a step open between backward and finish. Inverting
+    this flag would offload the optimizer in that interval.
     """
     worker = object.__new__(AutomodelPolicyWorkerImpl)
     model = _FakeTrainableModel()
