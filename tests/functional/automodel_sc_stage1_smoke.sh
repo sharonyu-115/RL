@@ -35,11 +35,11 @@ uv run examples/run_grpo_single_controller.py \
   policy.generation.colocated.resources.gpus_per_node=4 \
   policy.generation.vllm_cfg.async_engine=true \
   data_plane.enabled=true \
-  async_rl.sampler.name=in_order \
-  async_rl.sampler.max_lookahead_versions=0 \
-  async_rl.min_groups_for_streaming_train=8 \
-  async_rl.max_inflight_prompts=8 \
-  async_rl.max_buffered_rollouts=8 \
+  ++async_rl.sampler.name=in_order \
+  ++async_rl.sampler.max_lookahead_versions=0 \
+  ++async_rl.min_groups_for_streaming_train=8 \
+  ++async_rl.max_inflight_prompts=8 \
+  ++async_rl.max_buffered_rollouts=8 \
   checkpointing.enabled=false \
   logger.wandb_enabled=true \
   logger.wandb.project=nemorl-gemma4 \

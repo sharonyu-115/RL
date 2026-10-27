@@ -110,8 +110,9 @@ normalization, overlap, and scheduling experiments remain stages 2–4.
 
 ## Validation results
 
-Executed on 2026-10-27 against the implementation based on the upstream commit
-above. The numerical run used four H100 80 GB GPUs, FSDP DP=4, GBS=8, MBS=1,
+Executed on 2026-10-27 against worker/config implementation commit `d9e11db46`,
+based on the upstream commit above. The numerical run used four H100 80 GB GPUs,
+FSDP DP=4, GBS=8, MBS=1,
 sequence length 64, BF16 compute, and FP32 AdamW state. It exercised the real
 local metadata data plane, not the network TransferQueue service.
 
@@ -140,6 +141,29 @@ The temporary container installed main's pinned Lens
 not a freshly rebuilt image from the complete main lockfile; no dependency pins
 were changed in the repository.
 
-The live async vLLM/TransferQueue smoke result will be recorded after execution.
+The live smoke completed five GRPO steps on eight H100 GPUs (four training,
+four generation), with async vLLM `0.29.0`, the main-pinned TransferQueue
+`05d4cc3377bee9b0f2897bbb90914ee20c0aea39`, and the existing Gemma recipe's
+FusedAdam optimizer. Slurm job `20909968`; [W&B live run](https://wandb.ai/ys_fishcool-nvidia/nemorl-gemma4/runs/ou1umtre).
+Each step closed on exactly one chunk containing eight prompt groups / 32
+samples. Trainer versions advanced from 1 through 5, version lag remained zero,
+and every step completed weight refit. The run exited with code 0. The initial
+launcher attempt exposed a missing Hydra add-key prefix for the recipe's absent
+`async_rl` block; the corrected launcher is
+`tests/functional/automodel_sc_stage1_smoke.sh`.
+
+All five training records were verified through the W&B API:
+
+| Step | Loss | Gradient norm | Mean reward |
+| --- | --- | --- | --- |
+| 1 | 0.020320 | 0.580403 | 0.34375 |
+| 2 | 0.015364 | 0.877944 | 0.40625 |
+| 3 | 0.037431 | 0.909428 | 0.50000 |
+| 4 | 0.012519 | 0.711080 | 0.21875 |
+| 5 | 0.007353 | 1.139169 | 0.50000 |
+
+The W&B SDK emitted a teardown `BrokenPipeError` after reporting upload completion;
+the remote run is marked finished with all five records present. This did not
+interrupt training or refit.
 Checkpoint/restart, long-run learning quality, other models, and performance
 are not established by these checks.

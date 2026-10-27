@@ -34,7 +34,7 @@ path retains its broader configuration support.
 Run the five-step Gemma4 E2B integration smoke on one eight-GPU node:
 
 ```bash
-bash tests/test_suites/llm/grpo-gemma4-e2b-it-1n8g-automodel-sc-stage1.sh
+bash tests/functional/automodel_sc_stage1_smoke.sh
 ```
 
 The script uses the existing Gemma recipe with SC-specific overrides, splits four
@@ -581,7 +581,8 @@ The SC path is still under active development. Feature gaps are tracked in [issu
   [Multi-Teacher On-Policy Distillation](../about/algorithms/mopd.md#running-mopd).
 - Train backend: Megatron supports the configurations described in this guide.
   AutoModel is limited to the [Stage 1 full-batch baseline](#automodel-full-batch-baseline-stage-1);
-  the streaming and broader sampler options below do not apply to AutoModel yet.
+  the streaming and broader sampler options elsewhere in this guide do not
+  apply to AutoModel yet.
 - Generation backend: vLLM and Megatron generation are supported (Megatron in both non-colocated and colocated modes). Managed Dynamo (`backend: dynamo`) is supported on the native rollout path; see [Managed Dynamo generation](dynamo-generation.md#run-under-the-singlecontroller). SGLang and TRT-LLM have not been tested on SC.
 - Validation is not yet supported (setup raises on `val_period > 0`, `val_at_start`, or `val_at_end`); checkpointing is.
 - (PPO) Rollout drop budgets — `async_rl.rollout_failure.max_skipped_prompts` and `max_consecutive_dropped_prompts` must both be `0`. A drop shortens the step, and the critic shards it against the configured `value.train_global_batch_size` rather than its actual size, so setup rejects a non-zero budget. The resiliency layer stays available on GRPO.
