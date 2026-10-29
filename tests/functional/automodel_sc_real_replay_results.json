@@ -1,0 +1,242 @@
+{
+  "claim": "The AutoModel full-batch SC worker is numerically equivalent to V1 training under the tested configurations and recorded real inputs, with strict deterministic execution.",
+  "production_pr": 4963,
+  "production_sha": "8ec0e19ba28e0c6c7474529af37786cf81a3b809",
+  "tested_validation_sha": "fae8934804c25f59c6cebd6c387373ba793b8ec6",
+  "runs": [
+    {
+      "model": "dense",
+      "name": "gemma4-e2b-strict-real-worker-replay-s42-20983726",
+      "source_sha": "fae8934804c25f59c6cebd6c387373ba793b8ec6",
+      "url": "https://wandb.ai/ys_fishcool-nvidia/nemo-rl-automodel-sc/runs/85c4bff7",
+      "complete": true,
+      "records": 24,
+      "expected_records": 24,
+      "passed": true,
+      "comparisons": {
+        "gradients": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 27771416064,
+          "failures": []
+        },
+        "metrics": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 4080,
+          "failures": []
+        },
+        "model": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 30625839960,
+          "failures": []
+        },
+        "optimizer": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 83314272600,
+          "failures": []
+        },
+        "restore": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 100054400680,
+          "failures": []
+        },
+        "rng": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 136728,
+          "failures": []
+        },
+        "router_loads": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 0,
+          "failures": []
+        },
+        "scheduler": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 192,
+          "failures": []
+        }
+      },
+      "steps": [
+        {
+          "step": 1,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 18720,
+          "parameter_elements_changed": 0
+        },
+        {
+          "step": 2,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 17936,
+          "parameter_elements_changed": 2587673
+        },
+        {
+          "step": 3,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 27156,
+          "parameter_elements_changed": 6349264
+        },
+        {
+          "step": 4,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 26080,
+          "parameter_elements_changed": 8619308
+        },
+        {
+          "step": 5,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 26496,
+          "parameter_elements_changed": 10851929
+        },
+        {
+          "step": 6,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 9052,
+          "parameter_elements_changed": 13759952
+        }
+      ],
+      "scope": "AutoModel full-batch worker numerical replay; no controller/pipeline equivalence claim.",
+      "workspace": "https://wandb.ai/ys_fishcool-nvidia/nemo-rl-automodel-sc?nw=myuos0f8jrr",
+      "panels": 371,
+      "strict_determinism": true,
+      "batch_size": 32,
+      "micro_batch_size": 1,
+      "dp_ranks": 4,
+      "slurm_job": 20983726,
+      "slurm_exit_code": 0
+    },
+    {
+      "model": "moe",
+      "name": "qwen3-30ba3b-base-strict-real-worker-replay-s42-20983727",
+      "source_sha": "fae8934804c25f59c6cebd6c387373ba793b8ec6",
+      "url": "https://wandb.ai/ys_fishcool-nvidia/nemo-rl-automodel-sc/runs/1f8d3435",
+      "complete": true,
+      "records": 96,
+      "expected_records": 96,
+      "passed": true,
+      "comparisons": {
+        "gradients": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 183192735744,
+          "failures": []
+        },
+        "metrics": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 4140,
+          "failures": []
+        },
+        "model": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 183192735744,
+          "failures": []
+        },
+        "optimizer": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 549578309856,
+          "failures": []
+        },
+        "restore": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 641174661504,
+          "failures": []
+        },
+        "rng": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 546912,
+          "failures": []
+        },
+        "router_loads": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 0,
+          "failures": []
+        },
+        "scheduler": {
+          "max_abs": 0.0,
+          "different_elements": 0,
+          "compared_elements": 768,
+          "failures": []
+        }
+      },
+      "steps": [
+        {
+          "step": 1,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 0,
+          "parameter_elements_changed": 0
+        },
+        {
+          "step": 2,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 18432,
+          "parameter_elements_changed": 43296389
+        },
+        {
+          "step": 3,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 26880,
+          "parameter_elements_changed": 84429402
+        },
+        {
+          "step": 4,
+          "rows": 32,
+          "masked_rows": 4,
+          "nonzero_advantages": 17920,
+          "parameter_elements_changed": 142207927
+        },
+        {
+          "step": 5,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 35840,
+          "parameter_elements_changed": 190620314
+        },
+        {
+          "step": 6,
+          "rows": 32,
+          "masked_rows": 0,
+          "nonzero_advantages": 53760,
+          "parameter_elements_changed": 229392208
+        }
+      ],
+      "scope": "AutoModel full-batch worker numerical replay; no controller/pipeline equivalence claim.",
+      "workspace": "https://wandb.ai/ys_fishcool-nvidia/nemo-rl-automodel-sc?nw=iql83f2l0qk",
+      "panels": 399,
+      "strict_determinism": true,
+      "batch_size": 32,
+      "micro_batch_size": 1,
+      "dp_ranks": 16,
+      "slurm_job": 20983727,
+      "slurm_exit_code": 0
+    }
+  ],
+  "qualification": "Default and warning-only kernels fail even V1/V1 replay. Strict PyTorch determinism plus CUBLAS_WORKSPACE_CONFIG=:4096:8 and NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 is required for these exact results.",
+  "not_covered": [
+    "SC controller, sampler, transport and rollout/refit equivalence",
+    "Other parallelism or batching configurations",
+    "Nonzero reference KL and sequence-level loss in real replay",
+    "Gate cumulative expert-load/bias mutation (category empty for these models)",
+    "Previously observed Qwen SC step-60 logprob anomaly"
+  ]
+}

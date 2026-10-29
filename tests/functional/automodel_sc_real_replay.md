@@ -39,7 +39,7 @@ The helper self-check uses real GPU FusedAdam, checks initial and populated
 optimizer restoration, verifies repeated updates match, and checks that the
 comparator rejects different values and non-finite values.
 
-## Planned matrix
+## Validation matrix
 
 Six consecutive real updates per model, GBS=32, MBS=1, TP=CP=EP=1, full parameter
 FSDP2, no packing or dynamic batching, seed 42, normal stochastic vLLM rollouts.
@@ -70,3 +70,8 @@ for V1/V1 and V1/SC on all four ranks (job 20983411). The six-update runs theref
 use policy.automodel_cfg.deterministic=true plus SC_REPLAY_STRICT=1, which enforces
 strict PyTorch determinism in the validation worker only. All production methods
 remain unchanged. Equivalence results must explicitly carry this qualification.
+
+## Completed evidence
+
+See [the result report](automodel_sc_real_replay_results.md) and
+[the machine-readable summary](automodel_sc_real_replay_results.json).

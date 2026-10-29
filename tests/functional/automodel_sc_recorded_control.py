@@ -27,7 +27,18 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--input", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--deterministic", action="store_true")
+parser.add_argument("--strict-deterministic", action="store_true")
 args = parser.parse_args()
+if args.strict_deterministic:
+    assert os.environ.get("CUBLAS_WORKSPACE_CONFIG") == ":4096:8"
+    assert os.environ.get("NVTE_ALLOW_NONDETERMINISTIC_ALGO") == "0"
+    original_enable_deterministic = module.enable_deterministic_algorithms
+
+    def enable_strict_determinism():
+        original_enable_deterministic()
+        torch.use_deterministic_algorithms(True, warn_only=False)
+
+    module.enable_deterministic_algorithms = enable_strict_determinism
 rank = int(os.environ["RANK"])
 local_rank = int(os.environ["LOCAL_RANK"])
 torch.cuda.set_device(local_rank)
@@ -41,7 +52,7 @@ batch["rng"]["cuda"] = [
     batch["rng"]["cuda"][0].clone() for _ in range(torch.cuda.device_count())
 ]
 cfg = initial["config"]
-cfg["automodel_cfg"]["deterministic"] = args.deterministic
+cfg["automodel_cfg"]["deterministic"] = args.deterministic or args.strict_deterministic
 with patch.object(ray, "get_gpu_ids", return_value=[local_rank]):
     worker = module.AutomodelPolicyWorkerImpl(cfg, init_reference_model=False)
 worker.prepare_for_training()
@@ -93,7 +104,12 @@ for mode in ("v1", "v1_repeat", "sc"):
         }
         del result
         torch.cuda.empty_cache()
-report = {"rank": rank, "deterministic": args.deterministic, "comparisons": reports}
+report = {
+    "rank": rank,
+    "deterministic": cfg["automodel_cfg"]["deterministic"],
+    "strict_deterministic": args.strict_deterministic,
+    "comparisons": reports,
+}
 (args.output / f"rank-{rank:02d}.json").write_text(json.dumps(report, indent=2))
 print("RECORDED_CONTROL_RESULT " + json.dumps(report), flush=True)
 dist.barrier()
