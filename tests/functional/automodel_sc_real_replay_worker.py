@@ -170,8 +170,11 @@ def compare(actual, expected, path="", *, exact=False):
                 result["failures"].append(name + ": nonfinite")
                 return
             result["elements"] += b.numel()
+            if torch.equal(a, b):
+                return
             # Chunk on CPU so comparisons don't materialize full FP64 copies of
             # large embeddings or MoE tensors.
+            failed_tolerance = False
             for av, bv in zip(
                 a.reshape(-1).split(1_000_000),
                 b.reshape(-1).split(1_000_000),
@@ -186,9 +189,12 @@ def compare(actual, expected, path="", *, exact=False):
                 rtol, atol = (
                     (0, 0) if exact or not b.is_floating_point() else (1e-5, 1e-7)
                 )
-                if not torch.allclose(av, bv, rtol=rtol, atol=atol):
+                if (
+                    not torch.allclose(av, bv, rtol=rtol, atol=atol)
+                    and not failed_tolerance
+                ):
                     result["failures"].append(name + ": tolerance")
-                    break
+                    failed_tolerance = True
         elif isinstance(b, dict):
             if not isinstance(a, dict) or a.keys() != b.keys():
                 result["failures"].append(name + ": keys")
@@ -240,6 +246,14 @@ class ReplayWorkerImpl(AutomodelPolicyWorkerImpl):
         assert self.optimizer.exp_avg_dtype == torch.bfloat16
         assert self.optimizer.exp_avg_sq_dtype == torch.bfloat16
         assert not self.optimizer.capturable
+        self.replay_strict = os.environ.get("SC_REPLAY_STRICT") == "1"
+        if self.replay_strict:
+            assert self.cfg["automodel_cfg"]["deterministic"]
+            assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+            assert os.environ["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] == "0"
+            # NeMo RL's warn-only flag permits nondeterministic cuDNN attention.
+            # This is a validation-only override, shared by V1 and SC.
+            torch.use_deterministic_algorithms(True, warn_only=False)
         if self.replay_rank == 0:
             (self.replay_output / "fused_adam_runtime.py").write_text(
                 inspect.getsource(FusedAdam)
@@ -334,7 +348,10 @@ class ReplayWorkerImpl(AutomodelPolicyWorkerImpl):
         assert digest_batch(recorded) == initial_hash
         # Verify this was substantive training, including initialized moments.
         assert sc_after["optimizer"]["state"]
-        changes = compare(v1_after["model"], before["model"], "update")
+        changed_parameters = sum(
+            int(torch.count_nonzero(v1_after["model"][name] != before["model"][name]))
+            for name, _ in self.model.named_parameters()
+        )
         record = {
             "step": self.replay_step,
             "rank": self.replay_rank,
@@ -345,7 +362,8 @@ class ReplayWorkerImpl(AutomodelPolicyWorkerImpl):
             "atol": 1e-7,
             "masked_rows": int((recorded["sample_mask"] == 0).sum()),
             "nonzero_advantages": int(torch.count_nonzero(recorded["advantages"])),
-            "parameter_elements_changed": changes["different"],
+            "parameter_elements_changed": changed_parameters,
+            "strict_determinism": self.replay_strict,
             "comparisons": comparisons,
             "passed": not any(item["failures"] for item in comparisons.values()),
         }

@@ -54,3 +54,19 @@ Results belong to W&B project ys_fishcool-nvidia/nemo-rl-automodel-sc.
 Realized coverage (nonzero advantages, masked rows and changed parameters) must
 be reported from the artifacts, not assumed. This test does not resolve the
 earlier Qwen SC step-60 rollout/training logprob discrepancy.
+
+## Determinism qualification from the recorded control
+
+The first real Gemma batch failed strict V1/SC comparison with the default kernel
+settings. Replaying the saved batch through V1 twice also failed, including
+gradients and optimizer state. NeMo RL's deterministic flag calls PyTorch with
+warn_only=True; cuDNN attention explicitly warns that this still allows a
+nondeterministic backward algorithm. The warning-only control also failed.
+
+A separate control with CUBLAS_WORKSPACE_CONFIG=:4096:8,
+NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 and
+torch.use_deterministic_algorithms(True, warn_only=False) produced zero differences
+for V1/V1 and V1/SC on all four ranks (job 20983411). The six-update runs therefore
+use policy.automodel_cfg.deterministic=true plus SC_REPLAY_STRICT=1, which enforces
+strict PyTorch determinism in the validation worker only. All production methods
+remain unchanged. Equivalence results must explicitly carry this qualification.
