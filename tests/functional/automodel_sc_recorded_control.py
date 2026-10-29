@@ -35,6 +35,11 @@ initial = torch.load(args.input / f"initial-rank-{rank:02d}.pt", weights_only=Fa
 batch = torch.load(
     args.input / f"step-001-rank-{rank:02d}-input.pt", weights_only=False
 )
+assert len(batch["rng"]["cuda"]) == 1, "Recorded Ray actors each owned one GPU"
+# torchrun exposes all local GPUs; map the actor's CUDA RNG to each device.
+batch["rng"]["cuda"] = [
+    batch["rng"]["cuda"][0].clone() for _ in range(torch.cuda.device_count())
+]
 cfg = initial["config"]
 cfg["automodel_cfg"]["deterministic"] = args.deterministic
 with patch.object(ray, "get_gpu_ids", return_value=[local_rank]):
