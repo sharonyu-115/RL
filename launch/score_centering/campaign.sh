@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-CAMPAIGN=${CAMPAIGN:-/lustre/fsw/general_sa/shuangy/experiments/qwen3-score-centering-20261101}
+CAMPAIGN=${CAMPAIGN:-/lustre/fsw/general_sa/shuangy/experiments/qwen3-score-centering-20261101-r2}
 BASE_IMAGE=${BASE_IMAGE:-/lustre/fsw/general_sa/shuangy/images/nemo-rl-v0.8.0.rc0-5293408cb209-arm64.sqsh}
 RUNTIME_IMAGE=${RUNTIME_IMAGE:-${CAMPAIGN}/runtime.sqsh}
 MODEL=${MODEL:-/lustre/fsw/general_sa/shuangy/models/Qwen/Qwen3-30B-A3B-Base}

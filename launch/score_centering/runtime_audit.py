@@ -65,8 +65,9 @@ def main() -> None:
 
         if not transformer_engine.pytorch.__file__:
             raise RuntimeError("Transformer Engine failed to import")
+        submodule_root = Path("/opt/nemo-rl/3rdparty").resolve()
         for module in (megatron.bridge, megatron.core):
-            if "/opt/nemo-rl/3rdparty/" not in str(module.__file__):
+            if not Path(module.__file__).resolve().is_relative_to(submodule_root):
                 raise RuntimeError(
                     f"Unexpected source for {module.__name__}: {module.__file__}"
                 )

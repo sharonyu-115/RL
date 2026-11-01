@@ -8,14 +8,14 @@ MODE=${2:?Missing mode}
 export RUN_MODE=$MODE
 export ENROOT_ROOTFS_WRITABLE=1 PYTHONUNBUFFERED=1 HYDRA_FULL_ERROR=1
 export GPUS_PER_NODE=4 DEDICATED_RAY_HEAD=0
-export MOUNTS="$REPO:/opt/nemo-rl,/lustre:/lustre"
+export MOUNTS="/lustre:/lustre"
 export BASE_LOG_DIR="$CAMPAIGN/logs" RAY_LOG_SYNC_FREQUENCY=30
 if [[ "$STAGE" == runtime ]]; then
     PARTIAL="$CAMPAIGN/runtime.${SLURM_JOB_ID}.partial.sqsh"
     srun --nodes=1 --ntasks=1 --no-container-mount-home \
         --container-image="$BASE_IMAGE" --container-mounts="$MOUNTS" \
-        --container-workdir=/opt/nemo-rl --container-writable --container-save="$PARTIAL" \
-        bash /opt/nemo-rl/launch/score_centering/build_runtime.sh
+        --container-workdir="$REPO" --container-writable --container-save="$PARTIAL" \
+        bash "$REPO/launch/score_centering/prepare_runtime.sh" "$REPO"
     [[ -f "$CAMPAIGN/runtime-audit.json" && -s "$PARTIAL" ]] || fail "Runtime build did not produce its audited image"
     [[ ! -e "$RUNTIME_IMAGE" ]] || fail "Refusing to replace an existing runtime image"
     mv "$PARTIAL" "$RUNTIME_IMAGE"

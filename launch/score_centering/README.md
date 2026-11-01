@@ -6,6 +6,10 @@ The launchers contain local paths but no credentials. `campaign.sh` defines the
 campaign identity; do not change it between allocations of the same campaign.
 Keep the mounted source worktree unchanged while jobs are running; use a separate
 worktree and campaign when testing a different implementation.
+Containers mount `/lustre` at its original path and use `/opt/nemo-rl` as a
+symlink to the source worktree. This preserves relative submodule Git pointers;
+bind-mounting only the worktree at `/opt/nemo-rl` breaks those pointers. Runtime
+preparation preserves the image's original source at `/opt/nemo-rl.image-source`.
 The target Ptyche partitions allocate exclusive whole nodes without Slurm GPU
 GRES. These launchers therefore omit `--gres`; the runtime audit verifies that
 all four Blackwell GPUs are visible, and Ray uses `GPUS_PER_NODE=4`.
