@@ -12,7 +12,7 @@ export MOUNTS="$REPO:/opt/nemo-rl,/lustre:/lustre"
 export BASE_LOG_DIR="$CAMPAIGN/logs" RAY_LOG_SYNC_FREQUENCY=30
 if [[ "$STAGE" == runtime ]]; then
     PARTIAL="$CAMPAIGN/runtime.${SLURM_JOB_ID}.partial.sqsh"
-    srun --nodes=1 --ntasks=1 --gres=gpu:4 --no-container-mount-home \
+    srun --nodes=1 --ntasks=1 --no-container-mount-home \
         --container-image="$BASE_IMAGE" --container-mounts="$MOUNTS" \
         --container-workdir=/opt/nemo-rl --container-writable --container-save="$PARTIAL" \
         bash /opt/nemo-rl/launch/score_centering/build_runtime.sh

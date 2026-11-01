@@ -17,7 +17,7 @@ else
     IMAGE=$RUNTIME_IMAGE
 fi
 OPTIONS=(--parsable --account="$ACCOUNT" --partition="$PARTITIONS" --nodes="$NODES"
-    --ntasks-per-node=1 --gres=gpu:4 --exclusive --time=05:00:00
+    --ntasks-per-node=1 --exclusive --time=05:00:00
     --job-name="general_sa-qwen3-sc.${STAGE}" --chdir="$REPO"
     --output="$CAMPAIGN/logs/${STAGE}-%j.out" --error="$CAMPAIGN/logs/${STAGE}-%j.err")
 if [[ "$MODE" == dry-run ]]; then

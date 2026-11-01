@@ -47,6 +47,8 @@ def main() -> None:
             )
     if not torch.cuda.is_available():
         raise RuntimeError(f"{role}: CUDA is unavailable")
+    if torch.cuda.device_count() != 4:
+        raise RuntimeError(f"{role}: expected all four GPUs of the exclusive node")
     if torch.cuda.get_device_capability()[0] != 10:
         raise RuntimeError(f"{role}: expected Blackwell SM 10.x")
     if torch.backends.cudnn.version() < 92600:
