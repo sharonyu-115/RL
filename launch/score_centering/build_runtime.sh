@@ -18,7 +18,7 @@ uv run --locked --group test python -m pytest --noconftest \
     tests/unit/algorithms/test_score_centering_campaign.py \
     tests/unit/algorithms/test_score_centering.py \
     tests/unit/models/generation/test_score_centering.py -q --tb=short
-RAYON_NUM_THREADS=2 uv run --locked --group dev pyrefly check \
+RAYON_NUM_THREADS=2 uv run --locked --group dev pyrefly check --config /opt/nemo-rl/pyrefly.toml \
     nemo_rl/algorithms/loss/loss_input.py nemo_rl/algorithms/single_controller_utils/config.py \
     nemo_rl/experience/rollouts.py nemo_rl/models/generation/score_centering.py \
     nemo_rl/models/generation/interfaces.py
