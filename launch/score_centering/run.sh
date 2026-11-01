@@ -2,8 +2,8 @@
 set -euo pipefail
 source /opt/nemo-rl/launch/score_centering/campaign.sh
 STAGE=${1:?Missing stage}
-cd /opt/nemo-rl
-export PYTHONPATH="/opt/nemo-rl${PYTHONPATH:+:$PYTHONPATH}"
+cd -P /opt/nemo-rl
+export PYTHONPATH="$PWD"
 export UV_PROJECT_ENVIRONMENT=/opt/nemo_rl_venv NEMO_RL_VENV_DIR=/opt/ray_venvs
 export UV_LOCKED=true PYTHONUNBUFFERED=1 UV_HTTP_TIMEOUT=900
 export HF_HOME=/lustre/fsw/general_sa/shuangy/hf
