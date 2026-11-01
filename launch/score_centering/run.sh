@@ -30,6 +30,7 @@ for CHECKPOINT in "$RUN_ROOT"/checkpoints/step_*; do
 done
 if [[ "$STAGE" == smoke ]]; then
     COMMON+=(loss_fn.score_centering=true policy.generation.top_logprobs=32
+        ++policy.megatron_cfg.scheduler.max_steps=1500
         checkpointing.save_period=1 logger.wandb_enabled=false
         grpo.max_val_samples=16 grpo.val_batch_size=16 grpo.val_at_end=false)
     if (( START_STEP < 3 )); then

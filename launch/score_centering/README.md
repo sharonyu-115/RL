@@ -31,6 +31,8 @@ all four Blackwell GPUs are visible, and Ray uses `GPUS_PER_NODE=4`.
    the real 8-node layout. It trains to step 3 with SC/K32, checks finalized model,
    optimizer, and dataloader state, then restarts the driver and advances to step
    6. It uses the original 20,480-token response and 22,528-token sequence limits.
+   Both phases set `policy.megatron_cfg.scheduler.max_steps=1500` so changing the
+   smoke stop step does not change the checkpoint's LR/weight-decay schedules.
    Validation is reduced to 16 prompts only for this disposable smoke campaign.
 4. Only after `smoke/passed.json` exists, submit the comparison arms with
    `bash launch/score_centering/submit.sh nvfp4-control`, `nvfp4-sc`, and `bf16`.

@@ -4,9 +4,37 @@ from typing import Any
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 from launch.score_centering.check_smoke import verify_metrics
 from launch.score_centering.metrics import ScalarJsonlLogger
+from nemo_rl.algorithms.grpo import MasterConfig
+from nemo_rl.utils.config import (
+    load_config,
+    parse_hydra_overrides,
+    register_omegaconf_resolvers,
+)
+
+
+@pytest.mark.parametrize("stop_step", [3, 6])
+def test_smoke_preserves_scheduler_horizon_across_restart(stop_step: int) -> None:
+    register_omegaconf_resolvers()
+    root = Path(__file__).resolve().parents[3]
+    config = load_config(
+        root
+        / "examples/configs/recipes/llm/grpo-qwen3-30ba3b-base-8n4g-megatron-te-nvfp4-pertoken.yaml"
+    )
+    config = parse_hydra_overrides(
+        config,
+        [
+            f"grpo.max_num_steps={stop_step}",
+            "++policy.megatron_cfg.scheduler.max_steps=1500",
+        ],
+    )
+    resolved = MasterConfig.model_validate(OmegaConf.to_container(config, resolve=True))
+    assert resolved.grpo.max_num_steps == stop_step
+    assert resolved.policy["megatron_cfg"]["scheduler"]["max_steps"] == 1500
+    assert resolved.policy["megatron_cfg"]["scheduler"]["lr_warmup_iters"] == 10
 
 
 def _record(step: int) -> dict[str, Any]:
