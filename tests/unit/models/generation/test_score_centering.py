@@ -21,9 +21,61 @@ import torch
 
 from nemo_rl.models.generation.score_centering import (
     build_score_centering_request_overrides,
+    configure_score_centering_logprob_cap,
     extract_score_centering_samples,
     validate_score_centering_request,
+    validate_score_centering_sampling,
 )
+
+
+@pytest.mark.parametrize(
+    ("cap", "expected"), [(None, 32), (16, 32), (64, 64), (-1, -1)]
+)
+def test_score_centering_engine_logprob_cap(cap: int | None, expected: int) -> None:
+    config = {"top_logprobs": 32, "vllm_kwargs": {}}
+    if cap is not None:
+        config["vllm_kwargs"]["max_logprobs"] = cap
+    configure_score_centering_logprob_cap(config)
+    assert config["vllm_kwargs"]["max_logprobs"] == expected
+
+
+@pytest.mark.parametrize("count", [None, 0])
+def test_score_centering_disabled_preserves_engine_kwargs(count: int | None) -> None:
+    config = {"vllm_kwargs": {"max_logprobs": 8}}
+    if count is not None:
+        config["top_logprobs"] = count
+    configure_score_centering_logprob_cap(config)
+    assert config["vllm_kwargs"] == {"max_logprobs": 8}
+
+
+@pytest.mark.parametrize(
+    ("temperature", "top_p", "top_k", "mode", "valid"),
+    [
+        (1.0, 1.0, None, None, True),
+        (0.7, 1.0, None, "processed_logprobs", True),
+        (0.7, 1.0, None, "raw_logprobs", False),
+        (0.0, 1.0, None, None, False),
+        (float("nan"), 1.0, None, None, False),
+        (float("inf"), 1.0, None, None, False),
+        (1.0, 0.9, None, None, False),
+        (1.0, 1.0, 32, None, False),
+        (1.0, 1.0, None, "raw_logits", False),
+    ],
+)
+def test_score_centering_sampling_validation(
+    temperature: float, top_p: float, top_k: int | None, mode: str | None, valid: bool
+) -> None:
+    config = {
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "vllm_cfg": {"logprobs_mode": mode},
+    }
+    if valid:
+        validate_score_centering_sampling(config)
+    else:
+        with pytest.raises(ValueError):
+            validate_score_centering_sampling(config)
 
 
 def test_score_centering_request_and_sample_contract():

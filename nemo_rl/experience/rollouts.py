@@ -705,6 +705,16 @@ def generate_responses(
             assistant_message["generation_logprobs"] = generation_outputs["logprobs"][
                 i, input_length:total_length
             ]
+        sampler_keys = ("sampler_topk_token_ids", "sampler_topk_logprobs")
+        if any(key in generation_outputs for key in sampler_keys):
+            for key in sampler_keys:
+                if key not in generation_outputs:
+                    raise ValueError(
+                        f"Incomplete score-centering generation output: {key}"
+                    )
+                assistant_message[key] = generation_outputs[key][
+                    i, input_length:total_length
+                ]
         if "routed_experts" in generation_outputs:
             routed_experts = generation_outputs["routed_experts"][i]
             prefix_length = _attach_routed_experts_to_message_log_prefix(

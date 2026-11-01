@@ -22,9 +22,12 @@ tensor contract regardless of how the candidates were selected.
 
 import math
 from numbers import Real
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import torch
+
+if TYPE_CHECKING:
+    from nemo_rl.models.generation.vllm.config import VllmConfig
 
 VLLM_LOGPROB_FLOOR = -9999.0
 
@@ -34,6 +37,43 @@ class ScoreCenteringRequestOverrides(TypedDict):
 
     logprobs: bool
     top_logprobs: int
+
+
+def validate_score_centering_sampling(config: "VllmConfig") -> None:
+    """Require sampler probabilities to describe the unfiltered distribution."""
+    temperature = config["temperature"]
+    logprobs_mode = (config.get("vllm_cfg") or {}).get("logprobs_mode")
+    if logprobs_mode is None:
+        logprobs_mode = (config.get("vllm_kwargs") or {}).get("logprobs_mode")
+    if temperature <= 0 or not math.isfinite(temperature):
+        raise ValueError(
+            "loss_fn.score_centering requires a finite positive sampling temperature"
+        )
+    if logprobs_mode not in (None, "raw_logprobs", "processed_logprobs"):
+        raise ValueError(
+            "loss_fn.score_centering requires log probabilities, not raw/processed logits"
+        )
+    if logprobs_mode != "processed_logprobs" and temperature != 1.0:
+        raise ValueError(
+            "loss_fn.score_centering requires policy.generation.vllm_cfg.logprobs_mode="
+            "processed_logprobs when policy.generation.temperature != 1.0"
+        )
+    if config.get("top_p") != 1.0 or config.get("top_k") is not None:
+        raise ValueError(
+            "loss_fn.score_centering needs unfiltered sampling "
+            "(policy.generation.top_p=1, top_k=null)"
+        )
+
+
+def configure_score_centering_logprob_cap(config: "VllmConfig") -> None:
+    """Raise the vLLM candidate cap without overriding an unlimited cap."""
+    num_candidates = config.get("top_logprobs")
+    if not num_candidates:
+        return
+    engine_kwargs = config.setdefault("vllm_kwargs", {})
+    cap = engine_kwargs.get("max_logprobs")
+    if cap is None or (cap != -1 and cap < num_candidates):
+        engine_kwargs["max_logprobs"] = num_candidates
 
 
 def build_score_centering_request_overrides(

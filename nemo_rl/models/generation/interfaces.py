@@ -428,6 +428,8 @@ class GenerationOutputSpec(TypedDict):
         torch.Tensor
     )  # Length of full valid sequence (input + generated response)
     logprobs: torch.Tensor
+    sampler_topk_token_ids: NotRequired[torch.Tensor]
+    sampler_topk_logprobs: NotRequired[torch.Tensor]
     routed_experts: NotRequired[torch.Tensor]
     r3_routed_experts_missing_routes: NotRequired[torch.Tensor]
     r3_routed_experts_expected_routes: NotRequired[torch.Tensor]

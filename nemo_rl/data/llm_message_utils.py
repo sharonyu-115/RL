@@ -113,6 +113,38 @@ def message_log_to_flat_messages(
     for msg in message_log:
         all_keys.update(msg.keys())
 
+    sampler_keys = ("sampler_topk_token_ids", "sampler_topk_logprobs")
+    sampler_templates: dict[str, Tensor] = {}
+    if any(key in all_keys for key in sampler_keys):
+        for message in message_log:
+            if not any(key in message for key in sampler_keys):
+                continue
+            for key in sampler_keys:
+                tensor = message.get(key)
+                if not isinstance(tensor, Tensor) or tensor.ndim != 2:
+                    raise ValueError(
+                        f"Score centering requires a two-dimensional {key} on each captured turn"
+                    )
+                if tensor.shape[0] != len(message["token_ids"]):
+                    raise ValueError(
+                        f"Score centering field {key} must align with the turn's token_ids"
+                    )
+                if (
+                    key in sampler_templates
+                    and tensor.shape[1] != sampler_templates[key].shape[1]
+                ):
+                    raise ValueError(
+                        "Score centering candidate count changed between turns"
+                    )
+                sampler_templates[key] = tensor
+            if (
+                sampler_templates[sampler_keys[0]].shape
+                != sampler_templates[sampler_keys[1]].shape
+            ):
+                raise ValueError(
+                    "Score centering candidate IDs and logprobs must have matching shapes"
+                )
+
     # Initialize result with empty lists for each key
     for key in all_keys:
         result[key] = []
@@ -122,6 +154,21 @@ def message_log_to_flat_messages(
         for key in all_keys:
             if key in msg:
                 result[key].append(msg[key])
+            elif key in sampler_templates:
+                loss_mask = msg.get("token_loss_mask")
+                if (
+                    msg["role"] == "assistant"
+                    and "generation_logprobs" in msg
+                    and (loss_mask is None or bool(cast(Tensor, loss_mask).any()))
+                ):
+                    raise ValueError(
+                        "A generated assistant turn is missing score-centering candidates"
+                    )
+                result[key].append(
+                    sampler_templates[key].new_zeros(
+                        (len(msg["token_ids"]), sampler_templates[key].shape[1])
+                    )
+                )
 
     # Concatenate tensors for each key
     concat: FlatMessagesType = {}

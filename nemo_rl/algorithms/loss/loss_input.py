@@ -60,9 +60,9 @@ def _validate_score_centering_data(data: BatchedDataDict[Any]) -> None:
     ]
     if missing:
         raise ValueError(
-            f"Score centering requires {', '.join(missing)}: use SingleController "
-            "with NeMo Gym + vLLM, token_capture.enabled=true and "
-            "policy.generation.top_logprobs > 0."
+            f"Score centering requires {', '.join(missing)}: use synchronous GRPO "
+            "with vLLM or SingleController with NeMo Gym + vLLM and token_capture.enabled=true; "
+            "set policy.generation.top_logprobs > 0."
         )
 
 

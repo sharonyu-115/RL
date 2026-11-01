@@ -39,6 +39,10 @@ from nemo_rl.models.generation.interfaces import (
     resolve_routed_experts_dtype,
     verify_right_padding,
 )
+from nemo_rl.models.generation.score_centering import (
+    configure_score_centering_logprob_cap,
+    extract_score_centering_samples,
+)
 from nemo_rl.models.generation.vllm.checkpoint_engine import (
     VllmCheckpointEngineRpcMixin,
 )
@@ -554,6 +558,7 @@ class BaseVllmGenerationWorker:
                 "This error can also happen if the venv creation was aborted or errored out in the middle. In that case, "
                 "please run at least once with the environment variable NRL_FORCE_REBUILD_VENVS=true set to force the rebuild of the environment."
             )
+        configure_score_centering_logprob_cap(self.cfg)
         vllm_kwargs: dict[str, Any] = copy.deepcopy(self.cfg.get("vllm_kwargs", {}))
         # vLLM 0.28 (vllm-project/vllm#50411) skips rescale/normalize in the HF image
         # processor and re-applies them on the GPU in the vision tower's dtype. The
@@ -861,13 +866,16 @@ class BaseVllmGenerationWorker:
         max_tokens = (
             max_new_tokens if max_new_tokens is not None else self.cfg["max_new_tokens"]
         )
+        requested_logprobs = 0
+        if not greedy and self.cfg.get("top_logprobs"):
+            requested_logprobs = self.cfg["top_logprobs"]
 
         return self.SamplingParams(
             temperature=temperature,
             top_p=self.cfg["top_p"],
             top_k=top_k_val,
             max_tokens=max_tokens,
-            logprobs=0,
+            logprobs=requested_logprobs,
             stop_token_ids=self.cfg["stop_token_ids"],
             stop=stop_strings,
             include_stop_str_in_output=True,
@@ -1126,7 +1134,7 @@ class VllmGenerationWorkerImpl(VllmCheckpointEngineRpcMixin, BaseVllmGenerationW
             ):
                 self._generate_idle_dp_batch()
             # Return empty BatchedDataDict with all required fields
-            return BatchedDataDict[GenerationOutputSpec](
+            empty_output = BatchedDataDict[GenerationOutputSpec](
                 {
                     "output_ids": torch.zeros((0, 0), dtype=torch.long),
                     "logprobs": torch.zeros((0, 0), dtype=torch.float),
@@ -1135,6 +1143,15 @@ class VllmGenerationWorkerImpl(VllmCheckpointEngineRpcMixin, BaseVllmGenerationW
                     "truncated": torch.zeros(0, dtype=torch.bool),
                 }
             )
+            if not greedy and self.cfg.get("top_logprobs"):
+                empty_shape = (0, 0, self.cfg["top_logprobs"])
+                empty_output["sampler_topk_token_ids"] = torch.zeros(
+                    empty_shape, dtype=torch.int32
+                )
+                empty_output["sampler_topk_logprobs"] = torch.zeros(
+                    empty_shape, dtype=torch.float32
+                )
+            return empty_output
 
         input_ids = data["input_ids"]
         input_lengths = data["input_lengths"]
@@ -1214,6 +1231,22 @@ class VllmGenerationWorkerImpl(VllmCheckpointEngineRpcMixin, BaseVllmGenerationW
         for output in outputs:
             max_length = max(max_length, len(output.outputs[0].token_ids))
 
+        num_candidates = self.cfg.get("top_logprobs") if not greedy else None
+        sampler_topk_token_ids = None
+        sampler_topk_logprobs = None
+        if num_candidates:
+            sampler_shape = (
+                len(outputs),
+                padded_input_length + max_length,
+                num_candidates,
+            )
+            sampler_topk_token_ids = torch.zeros(
+                sampler_shape, dtype=torch.int32, device="cpu"
+            )
+            sampler_topk_logprobs = torch.zeros(
+                sampler_shape, dtype=torch.float32, device="cpu"
+            )
+
         for i, output in enumerate(outputs):
             # Extract generated tokens
             sequence_length = input_lengths[i]
@@ -1222,6 +1255,18 @@ class VllmGenerationWorkerImpl(VllmCheckpointEngineRpcMixin, BaseVllmGenerationW
             )
             generation = output.outputs[0]
             generated_tokens = list(generation.token_ids)
+            if num_candidates:
+                candidate_ids, candidate_logprobs = extract_score_centering_samples(
+                    generation, num_candidates=num_candidates
+                )
+                assert sampler_topk_token_ids is not None
+                assert sampler_topk_logprobs is not None
+                sampler_topk_token_ids[
+                    i, sequence_length : sequence_length + len(generated_tokens)
+                ] = candidate_ids
+                sampler_topk_logprobs[
+                    i, sequence_length : sequence_length + len(generated_tokens)
+                ] = candidate_logprobs
 
             # Calculate total sequence length (original input length + generated tokens)
             total_length = padded_input_length + max_length
@@ -1329,6 +1374,10 @@ class VllmGenerationWorkerImpl(VllmCheckpointEngineRpcMixin, BaseVllmGenerationW
         )
         if routed_experts_list:
             return_data["routed_experts"] = torch.stack(routed_experts_list)
+        if sampler_topk_token_ids is not None:
+            assert sampler_topk_logprobs is not None
+            return_data["sampler_topk_token_ids"] = sampler_topk_token_ids
+            return_data["sampler_topk_logprobs"] = sampler_topk_logprobs
         if r3_missing_routes:
             return_data["r3_routed_experts_missing_routes"] = torch.tensor(
                 r3_missing_routes, dtype=torch.long

@@ -4,10 +4,11 @@ Score centering adds a correction to the policy-gradient objective when the
 rollout sampler and training policy assign different probabilities to tokens.
 Enable it with `loss_fn.score_centering: true`; it is disabled by default.
 
-The current rollout integration requires SingleController, NeMo Gym, vLLM, and
-token capture with a positive top-k logprob count. The functional test uses
-Megatron training. This feature is experimental: distributed integration and
-training convergence need validation for the intended model and layout.
+Rollout integration supports synchronous GRPO with the synchronous vLLM engine,
+or SingleController with NeMo Gym, vLLM, and token capture. Both paths require a
+positive top-k logprob count. This feature is experimental: distributed
+integration and training convergence need validation for the intended model
+and layout.
 
 ## Objective
 
@@ -57,6 +58,60 @@ the previous policy, while the head correction uses the current policy.
 ordinary ratio and requires one optimizer update per rollout batch.
 
 ## Configuration
+
+### Synchronous GRPO, including NVFP4 per-token rollout
+
+The existing Qwen3-30B NVFP4 recipe can collect candidates directly from its
+colocated synchronous vLLM workers. This preserves dynamic sampling, reward
+scaling/shaping, router replay, and the NVFP4 IPC refit path. Gym and token
+capture are not required. For example:
+
+```bash
+uv run examples/run_grpo.py \
+  --config examples/configs/recipes/llm/grpo-qwen3-30ba3b-base-8n4g-megatron-te-nvfp4-pertoken.yaml \
+  loss_fn.score_centering=true \
+  policy.generation.top_logprobs=32 \
+  checkpointing.checkpoint_dir=results/qwen3-nvfp4-sc-k32 \
+  logger.log_dir=logs/qwen3-nvfp4-sc-k32 \
+  logger.wandb.name=qwen3-nvfp4-sc-k32
+```
+
+This retains the recipe's token-level TIS upper bound of 2 and its unset lower
+bound (effectively 0). Do not copy the lower bound of 0.5 from the separate
+SingleController example when comparing against that baseline. The recipe
+already uses temperature 1, top-p 1, no top-k sampling filter, and ordinary
+Megatron logits. Non-unit temperatures require `processed_logprobs`.
+
+Synchronous GRPO currently requires `data_plane.enabled=false`,
+`grpo.async_grpo.enabled=false`, `policy.generation.vllm_cfg.async_engine=false`,
+and native environments rather than NeMo Gym. Setup rejects unsupported
+combinations before allocating workers. Fused linear logprobs and Automodel
+TP/CP greater than one remain unsupported. These restrictions apply to the
+new sampler transport; they do not restrict the existing SingleController path.
+
+The worker returns int32 candidate IDs and float32 logprobs aligned with output
+tokens. Rollouts retain them in each assistant turn; flattening pads prompt,
+tool, and batch-padding positions with zeros. Dynamic sampling retains the
+candidates together with their selected trajectories, including across cached
+generation batches. The trainer uses the same top-k gather and centering loss
+as SingleController. Greedy validation requests do not collect candidates.
+
+For a plain control, set both `loss_fn.score_centering=false` and
+`policy.generation.top_logprobs=0`. Synchronous GRPO also allows collection with
+score centering disabled, so a control can use the same K to measure collection
+overhead separately. Use distinct checkpoint and logger identities for every
+arm. Existing historical curves do not replace a control on the same code and
+runtime environment.
+
+At 512 samples padded to 22,528 positions, the two sampler arrays alone occupy
+2.75 GiB for K=32, or 11 GiB for K=128. Dynamic-sampling candidates, copies,
+and trainer tensors add to this. Validate memory, TP2/EP8 backward, router
+replay, repeated NVFP4 refits, and save/resume on the intended hardware before
+a long run. CPU regression tests cover synchronous extraction through loss
+backward, padding, dynamic-sampling caches, and configuration rejection; they
+do not establish NVFP4 convergence or GPU performance.
+
+### SingleController
 
 Apply these settings to a SingleController NeMo Gym GRPO configuration with
 the TransferQueue data plane and async vLLM serving already configured:
@@ -123,6 +178,9 @@ zero instead of being clamped. Both the head and modeled tail use this rule.
 `seq-mask-tis` and sequence-level IS remain unsupported with score centering.
 
 ## Data Flow
+
+The following staging flow applies to SingleController. Synchronous GRPO uses
+the direct worker-to-message-to-training-batch flow described above.
 
 1. NeMo-RL configures Gym to send `logprobs=true, top_logprobs=K` in each policy
    HTTP request. This applies to every request to the policy model server,

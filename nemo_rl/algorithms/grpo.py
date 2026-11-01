@@ -135,6 +135,9 @@ from nemo_rl.models.generation.interfaces import (
     should_use_async_rollouts,
 )
 from nemo_rl.models.generation.megatron import MegatronGeneration
+from nemo_rl.models.generation.score_centering import (
+    validate_score_centering_sampling,
+)
 from nemo_rl.models.generation.sglang.config import SGLangConfig
 from nemo_rl.models.generation.sglang.sglang_generation import SGLangGeneration
 from nemo_rl.models.generation.trtllm import TrtllmConfig, TrtllmGeneration
@@ -664,6 +667,63 @@ def _shutdown_completed_nemo_gym_startup(
     shard_set.shutdown()
 
 
+def _validate_sync_score_centering(master_config: MasterConfig) -> None:
+    """Validate sampler collection before allocating synchronous GRPO workers."""
+    policy_config = master_config.policy
+    generation_config = policy_config["generation"]
+    enabled = master_config.loss_fn.score_centering
+    num_candidates = (
+        generation_config.get("top_logprobs") if generation_config else None
+    )
+    if num_candidates is not None and (
+        isinstance(num_candidates, bool)
+        or not isinstance(num_candidates, int)
+        or num_candidates < 0
+    ):
+        raise ValueError("policy.generation.top_logprobs must be a nonnegative integer")
+    if enabled and not num_candidates:
+        raise ValueError(
+            "loss_fn.score_centering requires policy.generation.top_logprobs > 0"
+        )
+    if not num_candidates:
+        return
+    assert generation_config is not None
+    if generation_config["backend"] != "vllm" or should_use_async_rollouts(
+        generation_config
+    ):
+        raise ValueError(
+            "Synchronous GRPO score centering requires vllm with async_engine=false"
+        )
+    if master_config.grpo.async_grpo.enabled or master_config.data_plane["enabled"]:
+        raise ValueError(
+            "Synchronous GRPO score centering requires async_grpo.enabled=false and data_plane.enabled=false"
+        )
+    if master_config.env.get("should_use_nemo_gym"):
+        raise ValueError("Use SingleController for score centering with NeMo Gym")
+    validate_score_centering_sampling(cast(VllmConfig, generation_config))
+    if not enabled:
+        return
+    megatron_config = policy_config.get("megatron_cfg")
+    if (
+        megatron_config
+        and megatron_config["enabled"]
+        and megatron_config.get("use_fused_linear_logprobs")
+    ):
+        raise ValueError("Score centering requires use_fused_linear_logprobs=false")
+    automodel_config = policy_config.get("automodel_cfg")
+    if (
+        automodel_config
+        and automodel_config["enabled"]
+        and (
+            automodel_config["tensor_parallel_size"] > 1
+            or automodel_config["context_parallel_size"] > 1
+        )
+    ):
+        raise ValueError(
+            "Score centering requires Automodel TP=CP=1 or the Megatron backend"
+        )
+
+
 def setup(
     master_config: MasterConfig,
     tokenizer: TokenizerType,
@@ -702,10 +762,7 @@ def setup(
     policy_config = master_config.policy
     generation_config = policy_config["generation"]
     loss_config: ClippedPGLossConfig = master_config.loss_fn
-    if loss_config.score_centering:
-        raise ValueError(
-            "Score centering requires SingleController with NeMo Gym + vLLM and policy.generation.top_logprobs > 0; the legacy GRPO trainer does not capture sampler tensors."
-        )
+    _validate_sync_score_centering(master_config)
     env_configs = master_config.env
     data_config = master_config.data
     grpo_config = master_config.grpo
@@ -2661,6 +2718,24 @@ def _preserve_router_replay_routed_experts(
         target["routed_experts"] = flat_messages["routed_experts"]
 
 
+def _preserve_score_centering_data(
+    target: BatchedDataDict,
+    flat_messages: BatchedDataDict,
+) -> None:
+    """Carry token-aligned sampler candidates into the policy training batch."""
+    for key in ("sampler_topk_token_ids", "sampler_topk_logprobs"):
+        if key not in flat_messages:
+            raise ValueError(f"Score centering is missing rollout field {key}")
+        tensor = flat_messages[key]
+        if tensor.ndim != 3 or tensor.shape[:2] != target["input_ids"].shape:
+            raise ValueError(f"Score centering field {key} must align with input_ids")
+        target[key] = tensor
+    if target["sampler_topk_token_ids"].shape != target["sampler_topk_logprobs"].shape:
+        raise ValueError(
+            "Score centering candidate IDs and logprobs must have matching shapes"
+        )
+
+
 def _policy_dtype(policy_config: PolicyConfig) -> torch.dtype:
     """Resolve the configured policy precision to its matching torch dtype."""
     return getattr(torch, policy_config["precision"])
@@ -4075,6 +4150,8 @@ def _grpo_train_impl(
                     _preserve_router_replay_routed_experts(
                         train_data, flat_messages, master_config.policy
                     )
+                    if master_config.loss_fn.score_centering:
+                        _preserve_score_centering_data(train_data, flat_messages)
                     train_data.to("cpu")
 
                     metrics_logging_data["content"] = flat_messages["content"]

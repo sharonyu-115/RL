@@ -64,6 +64,7 @@ from nemo_rl.distributed.virtual_cluster import (
 from nemo_rl.environments.call_selection import resolve_selection_policy
 from nemo_rl.environments.nemo_gym import should_use_nemo_gym
 from nemo_rl.experience.rollout_recovery import RecoveryGranularity
+from nemo_rl.models.generation.score_centering import validate_score_centering_sampling
 from nemo_rl.models.generation.vllm.config import (
     VllmConfig,
     parse_nvfp4_pertoken_rollout,
@@ -1530,35 +1531,7 @@ def validate_single_controller_config(master_config: MasterConfig) -> None:
             raise ValueError(
                 "loss_fn.score_centering requires policy.generation.top_logprobs > 0"
             )
-        generation_cfg = master_config.policy["generation"]
-        temperature = generation_cfg["temperature"]
-        logprobs_mode = (generation_cfg.get("vllm_cfg") or {}).get("logprobs_mode")
-        if logprobs_mode is None:
-            logprobs_mode = (generation_cfg.get("vllm_kwargs") or {}).get(
-                "logprobs_mode"
-            )
-        if temperature <= 0 or not math.isfinite(temperature):
-            raise ValueError(
-                "loss_fn.score_centering requires a finite positive sampling temperature"
-            )
-        if logprobs_mode not in (None, "raw_logprobs", "processed_logprobs"):
-            raise ValueError(
-                "loss_fn.score_centering requires log probabilities, not raw/processed logits"
-            )
-        if logprobs_mode != "processed_logprobs" and temperature != 1.0:
-            raise ValueError(
-                "loss_fn.score_centering requires policy.generation.vllm_cfg.logprobs_mode="
-                "processed_logprobs when policy.generation.temperature != 1.0"
-            )
-        if (
-            generation_cfg.get("top_p") != 1.0
-            or generation_cfg.get("top_k") is not None
-        ):
-            raise ValueError(
-                "loss_fn.score_centering needs unfiltered sampling "
-                "(policy.generation.top_p=1, top_k=null) so the captured top-k is "
-                "the sampling distribution"
-            )
+        validate_score_centering_sampling(cast(VllmConfig, generation_cfg))
 
         automodel_cfg = master_config.policy.get("automodel_cfg")
         if automodel_cfg is not None and automodel_cfg["enabled"]:
