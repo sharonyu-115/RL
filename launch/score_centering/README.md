@@ -31,8 +31,10 @@ all four Blackwell GPUs are visible, and Ray uses `GPUS_PER_NODE=4`.
    the real 8-node layout. It trains to step 3 with SC/K32, checks finalized model,
    optimizer, and dataloader state, then restarts the driver and advances to step
    6. It uses the original 20,480-token response and 22,528-token sequence limits.
-   Both phases set `policy.megatron_cfg.scheduler.max_steps=1500` so changing the
-   smoke stop step does not change the checkpoint's LR/weight-decay schedules.
+   Phase 1 sets `policy.megatron_cfg.scheduler.max_steps=1500`; phase 2 requests
+   1800 with `use_checkpoint_opt_param_scheduler=true`. The gate snapshots the
+   actual step-3 scheduler state before checkpoint pruning and verifies that
+   step 6 preserves every schedule parameter while advancing its sample counter.
    Validation is reduced to 16 prompts only for this disposable smoke campaign.
 4. Only after `smoke/passed.json` exists, submit the comparison arms with
    `bash launch/score_centering/submit.sh nvfp4-control`, `nvfp4-sc`, and `bf16`.
@@ -47,9 +49,16 @@ checkpoints, W&B runs, or runtime images are deleted by these scripts.
 
 ## Continue rather than restart
 
-All comparison arms use `grpo.max_num_steps=1500` and an unlimited epoch count
-from their first allocation. Step 100 is an analysis checkpoint, not a different
-training horizon. A finalized checkpoint is saved every 10 steps and at the
+All comparison arms now target `grpo.max_num_steps=1800` with an unlimited epoch
+count. The original campaign started with a 1500-step horizon; its extension
+restores the checkpoint's existing schedule rather than restarting or stretching
+warmup. `policy.megatron_cfg.scheduler.use_checkpoint_opt_param_scheduler=true`
+preserves the saved LR/weight-decay parameters and counters when the loop horizon
+changes. Do not set `scheduler.max_steps=1500` for an 1800-step production run:
+Bridge rejects a scheduler horizon shorter than `train_iters`.
+
+Intermediate reviews at steps 100 or 300 do not reset training. A finalized
+checkpoint is saved every 10 steps and at the
 four-hour training deadline in a five-hour allocation. Subsequent allocations
 reuse the same checkpoint directory and W&B ID. The normal GRPO resume path
 restores model/optimizer, scheduler, counters, and dataloader state. The separate

@@ -6,7 +6,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from launch.score_centering.check_smoke import verify_metrics
+from launch.score_centering.check_smoke import verify_metrics, verify_scheduler_resume
 from launch.score_centering.metrics import ScalarJsonlLogger
 from nemo_rl.algorithms.grpo import MasterConfig
 from nemo_rl.utils.config import (
@@ -16,8 +16,10 @@ from nemo_rl.utils.config import (
 )
 
 
-@pytest.mark.parametrize("stop_step", [3, 6])
-def test_smoke_preserves_scheduler_horizon_across_restart(stop_step: int) -> None:
+@pytest.mark.parametrize("stop_step,scheduler_steps", [(3, 1500), (6, 1800)])
+def test_smoke_extension_restores_checkpoint_scheduler(
+    stop_step: int, scheduler_steps: int
+) -> None:
     register_omegaconf_resolvers()
     root = Path(__file__).resolve().parents[3]
     config = load_config(
@@ -28,13 +30,61 @@ def test_smoke_preserves_scheduler_horizon_across_restart(stop_step: int) -> Non
         config,
         [
             f"grpo.max_num_steps={stop_step}",
-            "++policy.megatron_cfg.scheduler.max_steps=1500",
+            f"++policy.megatron_cfg.scheduler.max_steps={scheduler_steps}",
+            "++policy.megatron_cfg.scheduler.use_checkpoint_opt_param_scheduler=true",
         ],
     )
     resolved = MasterConfig.model_validate(OmegaConf.to_container(config, resolve=True))
     assert resolved.grpo.max_num_steps == stop_step
-    assert resolved.policy["megatron_cfg"]["scheduler"]["max_steps"] == 1500
+    assert resolved.policy["megatron_cfg"]["scheduler"]["max_steps"] == scheduler_steps
+    assert resolved.policy["megatron_cfg"]["scheduler"][
+        "use_checkpoint_opt_param_scheduler"
+    ]
     assert resolved.policy["megatron_cfg"]["scheduler"]["lr_warmup_iters"] == 10
+
+
+def test_production_extension_keeps_original_checkpoint_schedule() -> None:
+    register_omegaconf_resolvers()
+    root = Path(__file__).resolve().parents[3]
+    config = load_config(
+        root
+        / "examples/configs/recipes/llm/grpo-qwen3-30ba3b-base-8n4g-megatron-te-nvfp4-pertoken.yaml"
+    )
+    config = parse_hydra_overrides(
+        config,
+        [
+            "grpo.max_num_steps=1800",
+            "grpo.max_num_epochs=null",
+            "++policy.megatron_cfg.scheduler.use_checkpoint_opt_param_scheduler=true",
+        ],
+    )
+    resolved = MasterConfig.model_validate(OmegaConf.to_container(config, resolve=True))
+    assert resolved.grpo.max_num_steps == 1800
+    assert resolved.grpo.max_num_epochs is None
+    scheduler = resolved.policy["megatron_cfg"]["scheduler"]
+    assert scheduler["use_checkpoint_opt_param_scheduler"]
+    assert scheduler["lr_decay_iters"] == 1000
+    assert scheduler["lr_warmup_iters"] == 10
+    assert "max_steps" not in scheduler
+
+
+def test_scheduler_resume_preserves_settings_and_advances_counter() -> None:
+    baseline = {"num_steps": 1536, "wd_incr_steps": 768000, "max_lr": 1e-6}
+    restored = {**baseline, "num_steps": 3072}
+    verify_scheduler_resume(baseline, restored, initial_step=3, final_step=6)
+    assert baseline["num_steps"] == 1536
+
+
+@pytest.mark.parametrize(
+    "field,value", [("num_steps", 1536), ("wd_incr_steps", 921600), ("max_lr", 1e-7)]
+)
+def test_scheduler_resume_rejects_reset_or_changed_schedule(
+    field: str, value: float | int
+) -> None:
+    baseline = {"num_steps": 1536, "wd_incr_steps": 768000, "max_lr": 1e-6}
+    restored = {**baseline, "num_steps": 3072, field: value}
+    with pytest.raises(RuntimeError, match="changed unexpectedly"):
+        verify_scheduler_resume(baseline, restored, initial_step=3, final_step=6)
 
 
 def _record(step: int) -> dict[str, Any]:

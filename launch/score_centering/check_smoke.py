@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from nemo_rl.utils.checkpoint import CheckpointManager
+from nemo_rl.utils.checkpoint import (
+    CheckpointManager,
+    _load_megatron_common_state_dict,
+)
 
 
 def verify_checkpoint(root: Path, step: int) -> None:
@@ -20,6 +23,35 @@ def verify_checkpoint(root: Path, step: int) -> None:
     weights, optimizer = CheckpointManager.get_resume_paths(checkpoint)
     if weights is None or optimizer is None:
         raise RuntimeError("Checkpoint is missing resumable policy/optimizer state")
+
+
+def load_scheduler_state(root: Path, step: int) -> dict[str, float | int | str]:
+    weights = root / "checkpoints" / f"step_{step}" / "policy" / "weights"
+    iteration = int((weights / "latest_checkpointed_iteration.txt").read_text())
+    common = _load_megatron_common_state_dict(weights / f"iter_{iteration:07d}")
+    return common["opt_param_scheduler"]
+
+
+def verify_scheduler_resume(
+    baseline: dict[str, float | int | str],
+    restored: dict[str, float | int | str],
+    *,
+    initial_step: int,
+    final_step: int,
+) -> None:
+    counter = baseline["num_steps"]
+    if (
+        initial_step <= 0
+        or final_step <= initial_step
+        or not isinstance(counter, int)
+        or counter <= 0
+        or counter % initial_step
+    ):
+        raise RuntimeError("Invalid baseline scheduler counter")
+    expected = dict(baseline)
+    expected["num_steps"] = counter // initial_step * final_step
+    if restored != expected:
+        raise RuntimeError("Scheduler settings or resumed counter changed unexpectedly")
 
 
 def verify_metrics(records: list[dict[str, Any]], step: int) -> list[dict[str, Any]]:
@@ -49,10 +81,20 @@ def verify_metrics(records: list[dict[str, Any]], step: int) -> list[dict[str, A
 
 def main() -> None:
     mode, directory, target = sys.argv[1:]
+    if mode not in ("checkpoint", "scheduler-baseline", "complete"):
+        raise ValueError(f"Unknown smoke check: {mode}")
     root = Path(directory)
     step = int(target)
     verify_checkpoint(root, step)
     if mode == "checkpoint":
+        return
+    baseline_path = root / "scheduler-baseline.json"
+    if mode == "scheduler-baseline":
+        if step != 3:
+            raise RuntimeError("Scheduler baseline must come from smoke checkpoint 3")
+        baseline = {"step": step, "scheduler": load_scheduler_state(root, step)}
+        with baseline_path.open("x") as stream:
+            json.dump(baseline, stream, indent=2)
         return
     records = [
         json.loads(line)
@@ -60,6 +102,14 @@ def main() -> None:
         for line in path.read_text().splitlines()
     ]
     training = verify_metrics(records, step)
+    baseline = json.loads(baseline_path.read_text())
+    scheduler = load_scheduler_state(root, step)
+    verify_scheduler_resume(
+        baseline["scheduler"],
+        scheduler,
+        initial_step=baseline["step"],
+        final_step=step,
+    )
     report = {
         "status": "pass",
         "source_revision": subprocess.check_output(
@@ -74,7 +124,10 @@ def main() -> None:
             "vllm_generation",
             "score_centering_backward",
             "checkpoint_resume",
+            "scheduler_horizon_extension",
         ],
+        "scheduler_baseline": baseline,
+        "scheduler_final": scheduler,
         "numeric_diagnostics": training,
     }
     (root / "passed.json").write_text(json.dumps(report, indent=2))

@@ -17,6 +17,7 @@ mkdir -p "$RUN_ROOT/checkpoints" "$RUN_ROOT/training" "$RUN_ROOT/megatron-base"
 export SC_METRICS_PATH="$RUN_ROOT/metrics.${SLURM_JOB_ID}.jsonl"
 COMMON=(--config "$RECIPE" "policy.model_name=$MODEL" "policy.tokenizer.name=$MODEL"
     grpo.max_num_epochs=null checkpointing.enabled=true checkpointing.save_optimizer=true
+    ++policy.megatron_cfg.scheduler.use_checkpoint_opt_param_scheduler=true
     checkpointing.save_period=10 checkpointing.checkpoint_must_save_by=00:04:00:00
     "checkpointing.checkpoint_dir=$RUN_ROOT/checkpoints" "logger.log_dir=$RUN_ROOT/training"
     "++policy.megatron_cfg.env_vars.NRL_MEGATRON_CHECKPOINT_DIR=$RUN_ROOT/megatron-base"
@@ -30,18 +31,22 @@ for CHECKPOINT in "$RUN_ROOT"/checkpoints/step_*; do
 done
 if [[ "$STAGE" == smoke ]]; then
     COMMON+=(loss_fn.score_centering=true policy.generation.top_logprobs=32
-        ++policy.megatron_cfg.scheduler.max_steps=1500
         checkpointing.save_period=1 logger.wandb_enabled=false
         grpo.max_val_samples=16 grpo.val_batch_size=16 grpo.val_at_end=false)
     if (( START_STEP < 3 )); then
         export SC_METRICS_PATH="$RUN_ROOT/phase1.metrics.${SLURM_JOB_ID}.jsonl"
         uv run --locked --no-sync examples/run_grpo.py "${COMMON[@]}" grpo.max_num_steps=3 \
+            ++policy.megatron_cfg.scheduler.max_steps=1500 \
             2>&1 | tee "$RUN_ROOT/phase1.${SLURM_JOB_ID}.log"
         START_STEP=3
     fi
     uv run --no-project --python /opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker/bin/python python launch/score_centering/check_smoke.py checkpoint "$RUN_ROOT" "$START_STEP"
+    if [[ ! -f "$RUN_ROOT/scheduler-baseline.json" ]]; then
+        uv run --no-project --python /opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker/bin/python python launch/score_centering/check_smoke.py scheduler-baseline "$RUN_ROOT" 3
+    fi
     export SC_METRICS_PATH="$RUN_ROOT/phase2.metrics.${SLURM_JOB_ID}.jsonl"
     uv run --locked --no-sync examples/run_grpo.py "${COMMON[@]}" grpo.max_num_steps=6 \
+        ++policy.megatron_cfg.scheduler.max_steps=1800 \
         2>&1 | tee "$RUN_ROOT/phase2.${SLURM_JOB_ID}.log"
     uv run --no-project --python /opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker/bin/python python launch/score_centering/check_smoke.py complete "$RUN_ROOT" 6
     exit 0
@@ -66,7 +71,7 @@ IDENTITY="$RUN_ROOT/wandb-id"
 if [[ ! -f "$IDENTITY" ]]; then
     printf '%s' "$CAMPAIGN/$STAGE" | sha256sum | cut -c1-16 > "$IDENTITY"
 fi
-COMMON+=(grpo.max_num_steps=1500 "logger.wandb.project=$PROJECT" "++logger.wandb.entity=$ENTITY"
+COMMON+=(grpo.max_num_steps=1800 "logger.wandb.project=$PROJECT" "++logger.wandb.entity=$ENTITY"
     "logger.wandb.name=$(basename "$CAMPAIGN")-$STAGE" "++logger.wandb.id=$(cat "$IDENTITY")"
     "++logger.wandb.resume=$WANDB_RESUME_MODE" logger.wandb_enabled=true)
 case "$STAGE" in
